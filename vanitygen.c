@@ -71,7 +71,7 @@ encode_b58_check(void *buf, size_t len, char *result)
 	bndiv = &bnb;
 
 	brlen = (2 * len) + 4;
-	binres = malloc(brlen);
+	binres = (unsigned char*) malloc(brlen);
 	memcpy(binres, buf, len);
 
 	SHA256(binres, len, hash1);

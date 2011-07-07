@@ -133,7 +133,7 @@ int getopt(int argc, TCHAR *argv[], TCHAR *optstring)
 int __cdecl __initptw32(void);
 #define _CRTALLOC(x) __declspec(allocate(x))
 _CRTALLOC(".CRT$XIC")
-static pinit = __initptw32;
+static int (*pinit)(void) = __initptw32;
 int __cdecl
 __initptw32(void)
 {

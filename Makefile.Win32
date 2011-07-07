@@ -3,14 +3,16 @@ OPENSSL_DIR = C:\OpenSSL-Win32
 PTHREADS_DIR = C:\pthreads-w32
 PCRE_DIR = C:\pcre-7.9-src
 CFLAGS = /D_WIN32 /DPTW32_STATIC_LIB /DPCRE_STATIC /I$(OPENSSL_DIR)\include /I$(PTHREADS_DIR) /I$(PCRE_DIR)
-LIBS = $(OPENSSL_DIR)\lib\libeay32.dll $(PTHREADS_DIR)\pthread.lib $(PCRE_DIR)\pcre.lib ws2_32.lib
+LIBS = $(OPENSSL_DIR)\lib\libeay32.lib $(PTHREADS_DIR)\pthread.lib $(PCRE_DIR)\pcre.lib ws2_32.lib
 OBJS = vanitygen.obj
 
 all: vanitygen.exe
-	link /nologo /out:vanitygen.exe $(LIBS)
+
+vanitygen.exe: $(OBJS)
+	link /nologo /out:vanitygen.exe $(OBJS) $(LIBS)
 
 .c.obj:
-	$(CC) $(CFLAGS) /Tp$< /Fo$@
+	$(CC) $(CFLAGS) /c /Tp$< /Fo$@
 
 clean:
 	del vanitygen.exe
