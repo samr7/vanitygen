@@ -1,0 +1,25 @@
+Version 0.1, released July 4 2011:
+	- Exact prefix searching
+	- Regular expression searching
+
+Version 0.2, released July 5 2011:
+	- Fix the regular expression problem reported by pyna and 
+	  molecular.
+	- Add support for multi-pattern searching.
+
+Version 0.3, released July 5 2011:
+	- Resolve the pcre_study() bug reported by an0therlr3
+	- Add probability so far and time estimates suggested by davux
+	- Clean up the display, make it look more like phoenix miner
+
+Version 0.4, released July 6 2011:
+	- Fix assertion failure when using exact prefixes starting with 
+ 	  more than one 1, reported by SgtSpike
+	- Port to Windows, start distributing Win32 binaries
+
+Version 0.5, released July 7 2011:
+	- Now with worker threads and CPU count detection, suggested by 
+	  davux and others
+	- Exact prefixes can now be matched case-insensitively with 
+	  "-i", for SgtSpike
+	- Fixed an integer overflow problem with the status display
