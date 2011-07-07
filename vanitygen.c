@@ -16,6 +16,11 @@
  * along with Vanitygen.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include <assert.h>
+
 #include <openssl/sha.h>
 #include <openssl/ripemd.h>
 #include <openssl/ec.h>
@@ -24,16 +29,16 @@
 
 #include <pcre.h>
 
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
+#ifndef _WIN32
+#define INLINE inline
 #include <sys/time.h>
-#include <assert.h>
+#include <errno.h>
 #include <unistd.h>
-#include <math.h>
+#else
+#include "winglue.c"
+#endif
 
-
-const char *version = "0.3";
+const char *version = "0.4";
 const int debug = 0;
 int verbose = 0;
 
@@ -217,8 +222,15 @@ output_timing(int cycle, int *total, struct timeval *last, double chance)
 				}
 			}
 
-			p = snprintf(&linebuf[p], rem, "[%d%% in %.1f%s]",
-				     (int) (100 * targ), time, unit);
+			if (time > 1000000) {
+				p = snprintf(&linebuf[p], rem,
+					     "[%d%% in %e%s]",
+					     (int) (100 * targ), time, unit);
+			} else {
+				p = snprintf(&linebuf[p], rem,
+					     "[%d%% in %.1f%s]",
+					     (int) (100 * targ), time, unit);
+			}
 			assert(p > 0);
 			rem -= p;
 			if (rem < 0)
@@ -390,9 +402,14 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 			 * Addresses above the ceiling will have one
 			 * fewer "1" prefix in front than we require.
 			 */
-			if (BN_cmp(&bnceil, bnlow2) < 0)
+			if (BN_cmp(&bnceil, bnlow2) < 0) {
 				/* High prefix is above the ceiling */
 				check_upper = 0;
+				BN_free(bnhigh2);
+				bnhigh2 = NULL;
+				BN_free(bnlow2);
+				bnlow2 = NULL;
+			}
 			else if (BN_cmp(&bnceil, bnhigh2) < 0)
 				/* High prefix is partly above the ceiling */
 				BN_copy(bnhigh2, &bnceil);
@@ -403,6 +420,7 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 			 */
 			if (BN_cmp(&bnfloor, bnhigh) >= 0) {
 				/* Low prefix is completely below the floor */
+				assert(check_upper);
 				check_upper = 0;
 				BN_free(bnhigh);
 				bnhigh = bnhigh2;
@@ -428,8 +446,13 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 	BN_lshift(&bntmp2, &bntmp, 192);
 
 	if (check_upper) {
-		if (BN_cmp(&bntmp2, bnhigh2) > 0)
+		if (BN_cmp(&bntmp2, bnhigh2) > 0) {
 			check_upper = 0;
+			BN_free(bnhigh2);
+			bnhigh2 = NULL;
+			BN_free(bnlow2);
+			bnlow2 = NULL;
+		}
 		else if (BN_cmp(&bntmp2, bnlow2) > 0)
 			BN_copy(bnlow2, &bntmp2);
 	}
@@ -455,8 +478,13 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 	BN_lshift(&bntmp2, &bntmp, 192);
 
 	if (check_upper) {
-		if (BN_cmp(&bntmp2, bnlow2) < 0)
+		if (BN_cmp(&bntmp2, bnlow2) < 0) {
 			check_upper = 0;
+			BN_free(bnhigh2);
+			bnhigh2 = NULL;
+			BN_free(bnlow2);
+			bnlow2 = NULL;
+		}
 		else if (BN_cmp(&bntmp2, bnhigh2) < 0)
 			BN_copy(bnlow2, &bntmp2);
 	}
@@ -527,35 +555,35 @@ typedef struct _avl_root_s {
 	avl_item_t *ar_root;
 } avl_root_t;
 
-inline void
+INLINE void
 avl_root_init(avl_root_t *rootp)
 {
 	rootp->ar_root = NULL;
 }
 
-inline int
+INLINE int
 avl_root_empty(avl_root_t *rootp)
 {
 	return (rootp->ar_root == NULL) ? 1 : 0;
 }
 
-inline void
+INLINE void
 avl_item_init(avl_item_t *itemp)
 {
 	memset(itemp, 0, sizeof(*itemp));
 	itemp->ai_balance = CENT;
 }
 
-#define container_of(ptr, type, member) ({ \
-                const typeof( ((type *)0)->member ) *__mptr = (ptr); \
-                (type *)( (char *)__mptr - offsetof(type,member) );})
+#define container_of(ptr, type, member) \
+	(((type*) (((unsigned char *)ptr) - \
+		   (size_t)&(((type *)((unsigned char *)0))->member))))
 
 #define avl_item_entry(ptr, type, member) \
 	container_of(ptr, type, member)
 
 
 
-inline void
+INLINE void
 _avl_rotate_ll(avl_root_t *rootp, avl_item_t *itemp)
 {
 	avl_item_t *tmp;
@@ -579,7 +607,7 @@ _avl_rotate_ll(avl_root_t *rootp, avl_item_t *itemp)
 	itemp->ai_up = tmp;
 }
 
-inline void
+INLINE void
 _avl_rotate_lr(avl_root_t *rootp, avl_item_t *itemp)
 {
 	avl_item_t *rcp, *rlcp;
@@ -608,7 +636,7 @@ _avl_rotate_lr(avl_root_t *rootp, avl_item_t *itemp)
 	itemp->ai_up = rlcp;
 }
 
-inline void
+INLINE void
 _avl_rotate_rr(avl_root_t *rootp, avl_item_t *itemp)
 {
 	avl_item_t *tmp;
@@ -632,7 +660,7 @@ _avl_rotate_rr(avl_root_t *rootp, avl_item_t *itemp)
 	itemp->ai_up = tmp;
 }
 
-inline void
+INLINE void
 _avl_rotate_rl(avl_root_t *rootp, avl_item_t *itemp)
 {
 	avl_item_t *rcp, *rlcp;
@@ -821,7 +849,7 @@ avl_insert_fix(avl_root_t *rootp, avl_item_t *itemp)
 	}
 }
 
-inline avl_item_t *
+INLINE avl_item_t *
 avl_next(avl_item_t *itemp)
 {
 	if (itemp->ai_right) {
