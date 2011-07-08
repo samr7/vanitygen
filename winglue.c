@@ -5,6 +5,56 @@
 #define INLINE
 #define snprintf _snprintf
 
+
+int
+count_processors(void)
+{
+	typedef BOOL (WINAPI *LPFN_GLPI)(
+		PSYSTEM_LOGICAL_PROCESSOR_INFORMATION, PDWORD);
+	LPFN_GLPI glpi;
+	PSYSTEM_LOGICAL_PROCESSOR_INFORMATION buffer = NULL, ptr;
+	DWORD size = 0, count = 0, pos = 0, i, ret;
+
+	glpi = (LPFN_GLPI) GetProcAddress(GetModuleHandle(TEXT("kernel32")),
+					  "GetLogicalProcessorInformation");
+	if (!glpi)
+		return -1;
+
+	while (1) {
+		ret = glpi(buffer, &size);
+		if (ret)
+			break;
+		if (buffer)
+			free(buffer);
+		if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+			return -1;
+		buffer = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION) malloc(size);
+		if (!buffer)
+			return -1;
+	}
+
+	for (ptr = buffer;
+	     (pos + sizeof(*ptr)) <= size;
+	     ptr++, pos += sizeof(*ptr)) {
+		switch (ptr->Relationship) {
+		case RelationProcessorCore:
+			for (i = ptr->ProcessorMask; i != 0; i >>= 1) {
+				if (i & 1)
+					count++;
+			}
+			count++;
+			break;
+		default:
+			break;
+		}
+	}
+
+	if (buffer)
+		free(buffer);
+	return count;
+}
+
+
 /*
  * struct timeval compatibility for Win32
  */

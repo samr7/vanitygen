@@ -1969,16 +1969,13 @@ read_file(FILE *fp, char ***result, int *rescount)
 	return ret;
 }
 
+#if !defined(_WIN32)
 int
 count_processors(void)
 {
 	FILE *fp;
 	char buf[512];
 	int count = 0;
-
-#if defined(_WIN32)
-	return GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
-#endif
 
 	fp = fopen("/proc/cpuinfo", "r");
 	if (!fp)
@@ -1991,6 +1988,7 @@ count_processors(void)
 	fclose(fp);
 	return count;
 }
+#endif
 
 int
 start_threads(void *(*func)(void *), void *arg, int nthreads)
