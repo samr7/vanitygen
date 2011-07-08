@@ -23,3 +23,8 @@ Version 0.5, released July 7 2011:
 	- Exact prefixes can now be matched case-insensitively with 
 	  "-i", for SgtSpike
 	- Fixed an integer overflow problem with the status display
+
+Version 0.6, released July 8 2011:
+	- Fix calculation of difficulty for multiple prefixes
+	- When prefixes overlap, output the discarded prefix as 
+	  well as the existing prefix with which it overlaps

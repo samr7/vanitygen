@@ -40,7 +40,7 @@
 #include "winglue.c"
 #endif
 
-const char *version = "0.5";
+const char *version = "0.6";
 const int debug = 0;
 int verbose = 0;
 
@@ -1062,7 +1062,7 @@ vg_prefix_avl_insert(avl_root_t *rootp, vg_prefix_t *vpnew)
 vg_prefix_t *
 vg_prefix_add(avl_root_t *rootp, const char *pattern, BIGNUM *low, BIGNUM *high)
 {
-	vg_prefix_t *vp;
+	vg_prefix_t *vp, *vp2;
 	vp = (vg_prefix_t *) malloc(sizeof(*vp));
 	if (vp) {
 		avl_item_init(&vp->vp_item);
@@ -1070,7 +1070,10 @@ vg_prefix_add(avl_root_t *rootp, const char *pattern, BIGNUM *low, BIGNUM *high)
 		vp->vp_pattern = pattern;
 		vp->vp_low = low;
 		vp->vp_high = high;
-		if (vg_prefix_avl_insert(rootp, vp) != NULL) {
+		vp2 = vg_prefix_avl_insert(rootp, vp);
+		if (vp2 != NULL) {
+			printf("Prefix '%s' ignored, overlaps '%s'\n",
+			       pattern, vp2->vp_pattern);
 			vg_prefix_free(vp);
 			vp = NULL;
 		}
@@ -1140,6 +1143,7 @@ vg_prefix_range_sum(vg_prefix_t *vp, BIGNUM *result, BIGNUM *tmp1, BIGNUM *tmp2)
 	BIGNUM *bnptr = result;
 
 	startp = vp;
+	BN_clear(result);
 	do {
 		BN_sub(tmp1, vp->vp_high, vp->vp_low);
 		if (bnptr == result) {
@@ -1314,10 +1318,6 @@ vg_prefix_context_add_patterns(vg_prefix_context_t *vcpp,
 				vp = vg_prefix_add_ranges(&vcpp->vcp_avlroot,
 							  patterns[i],
 							  ranges, NULL);
-				if (!vp)
-					printf("Could not add prefix '%s': "
-					       "overlapping?\n",
-					       patterns[i]);
 			}
 
 		} else {
@@ -1348,9 +1348,6 @@ vg_prefix_context_add_patterns(vg_prefix_context_t *vcpp,
 							   ranges,
 							   vp);
 				if (!vp2) {
-					printf("Could not add prefix '%s': "
-					       "overlapping?\n",
-					       patterns[i]);
 					fail = 1;
 					break;
 				}
@@ -1376,9 +1373,9 @@ vg_prefix_context_add_patterns(vg_prefix_context_t *vcpp,
 		BN_copy(&vcpp->vcp_difficulty, &bntmp2);
 
 		if (verbose) {
-			BN_set_word(&bntmp, 0);
-			BN_set_bit(&bntmp, 192);
-			BN_div(&bntmp3, NULL, &bntmp, &bntmp2, bnctx);
+			BN_clear(&bntmp2);
+			BN_set_bit(&bntmp2, 192);
+			BN_div(&bntmp3, NULL, &bntmp2, &bntmp, bnctx);
 
 			dbuf = BN_bn2dec(&bntmp3);
 			printf("Prefix difficulty: %20s %s\n",
