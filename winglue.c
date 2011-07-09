@@ -42,7 +42,6 @@ count_processors(void)
 				if (i & 1)
 					count++;
 			}
-			count++;
 			break;
 		default:
 			break;

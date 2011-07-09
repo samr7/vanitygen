@@ -40,7 +40,7 @@
 #include "winglue.c"
 #endif
 
-const char *version = "0.6";
+const char *version = "0.8";
 const int debug = 0;
 int verbose = 0;
 
@@ -1063,6 +1063,7 @@ vg_prefix_t *
 vg_prefix_add(avl_root_t *rootp, const char *pattern, BIGNUM *low, BIGNUM *high)
 {
 	vg_prefix_t *vp, *vp2;
+	assert(BN_cmp(low, high) < 0);
 	vp = (vg_prefix_t *) malloc(sizeof(*vp));
 	if (vp) {
 		avl_item_init(&vp->vp_item);
@@ -1259,7 +1260,7 @@ vg_prefix_context_next_difficulty(vg_prefix_context_t *vcpp,
 {
 	char *dbuf;
 
-	BN_set_word(bntmp, 0);
+	BN_clear(bntmp);
 	BN_set_bit(bntmp, 192);
 	BN_div(bntmp2, NULL, bntmp, &vcpp->vcp_difficulty, bnctx);
 
@@ -1425,7 +1426,6 @@ generate_address_prefix(vg_prefix_context_t *vcpp)
 	BN_CTX *bnctx;
 	BIGNUM bntarg;
 	BIGNUM bnbase;
-	BIGNUM bndifficulty;
 	BIGNUM bntmp, bntmp2;
 
 	EC_KEY *pkey = NULL;
@@ -1440,7 +1440,6 @@ generate_address_prefix(vg_prefix_context_t *vcpp)
 
 	BN_init(&bntarg);
 	BN_init(&bnbase);
-	BN_init(&bndifficulty);
 	BN_init(&bntmp);
 	BN_init(&bntmp2);
 
@@ -1532,8 +1531,8 @@ generate_address_prefix(vg_prefix_context_t *vcpp)
 
 			/* Subtract the range from the difficulty */
 			vg_prefix_range_sum(vp, &bntarg, &bntmp, &bntmp2);
-			BN_sub(&bntmp, &bndifficulty, &bntarg);
-			BN_copy(&bndifficulty, &bntmp2);
+			BN_sub(&bntmp, &vcpp->vcp_difficulty, &bntarg);
+			BN_copy(&vcpp->vcp_difficulty, &bntmp);
 
 			vg_prefix_delete(&vcpp->vcp_avlroot, vp);
 			vcpp->vcp_npfx--;
@@ -1558,7 +1557,6 @@ generate_address_prefix(vg_prefix_context_t *vcpp)
 	pthread_mutex_unlock(&vcpp->vcp_lock);
 	BN_clear_free(&bntarg);
 	BN_clear_free(&bnbase);
-	BN_clear_free(&bndifficulty);
 	BN_clear_free(&bntmp);
 	BN_clear_free(&bntmp2);
 	BN_CTX_free(bnctx);
@@ -2002,6 +2000,10 @@ start_threads(void *(*func)(void *), void *arg, int nthreads)
 			printf("ERROR: could not determine processor count\n");
 			nthreads = 1;
 		}
+	}
+
+	if (verbose) {
+		printf("Using %d worker thread(s)\n", nthreads);
 	}
 
 	while (--nthreads) {
