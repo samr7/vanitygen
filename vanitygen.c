@@ -40,11 +40,13 @@
 #include "winglue.c"
 #endif
 
-const char *version = "0.8";
+const char *version = "0.9";
 const int debug = 0;
-int verbose = 0;
+int verbose = 1;
+int remove_on_match = 1;
+const char *result_file = NULL;
 
-static const char *b58_alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const char *b58_alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 void
 encode_b58_check(void *buf, size_t len, char *result)
@@ -167,16 +169,18 @@ typedef struct _timing_info_s {
 } timing_info_t;
 
 void
-output_timing(int cycle, struct timeval *last, double chance)
+output_timing(int cycle, struct timeval *last,
+	      unsigned long long found, unsigned long pattcount,
+	      double chance)
 {
-	static unsigned long long total;
+	static unsigned long long total = 0, prevfound = 0, sincelast = 0;
 	static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 	static timing_info_t *timing_head = NULL;
 
 	pthread_t me;
 	struct timeval tvnow, tv;
 	timing_info_t *tip, *mytip;
-	long long rate, myrate;
+	unsigned long long rate, myrate;
 	double count, prob, time, targ;
 	char linebuf[80];
 	char *unit;
@@ -210,7 +214,12 @@ output_timing(int cycle, struct timeval *last, double chance)
 	}
 
 	total += cycle;
-	count = total;
+	if (prevfound != found) {
+		prevfound = found;
+		sincelast = 0;
+	}
+	sincelast += cycle;
+	count = sincelast;
 
 	if (mytip != timing_head) {
 		pthread_mutex_unlock(&mutex);
@@ -228,12 +237,15 @@ output_timing(int cycle, struct timeval *last, double chance)
 	if (chance >= 1.0) {
 		prob = 1.0f - exp(-count/chance);
 
-		p = snprintf(&linebuf[p], rem, "[Prob %.1f%%]", prob * 100);
-		assert(p > 0);
-		rem -= p;
-		if (rem < 0)
-			rem = 0;
-		p = sizeof(linebuf) - rem;
+		if (prob <= 0.999) {
+			p = snprintf(&linebuf[p], rem, "[Prob %.1f%%]",
+				     prob * 100);
+			assert(p > 0);
+			rem -= p;
+			if (rem < 0)
+				rem = 0;
+			p = sizeof(linebuf) - rem;
+		}
 
 		for (i = 0; i < sizeof(targs)/sizeof(targs[0]); i++) {
 			targ = targs[i];
@@ -274,7 +286,20 @@ output_timing(int cycle, struct timeval *last, double chance)
 			rem -= p;
 			if (rem < 0)
 				rem = 0;
+			p = sizeof(linebuf) - rem;
 		}
+	}
+
+	if (found) {
+		if (pattcount)
+			p = snprintf(&linebuf[p], rem, "[Found %lld/%ld]",
+				     found, pattcount);
+		else
+			p = snprintf(&linebuf[p], rem, "[Found %lld]", found);
+		assert(p > 0);
+		rem -= p;
+		if (rem < 0)
+			rem = 0;
 	}
 
 	if (rem) {
@@ -288,37 +313,57 @@ output_timing(int cycle, struct timeval *last, double chance)
 void
 output_match(EC_KEY *pkey, const char *pattern, int addrtype, int privtype)
 {
-	char print_buf[512];
-
 	unsigned char key_buf[512], *pend;
+	char addr_buf[64];
+	char privkey_buf[128];
 	int len;
 
 	assert(EC_KEY_check_key(pkey));
+	encode_address(pkey, addrtype, addr_buf);
+	encode_privkey(pkey, privtype, privkey_buf);
 
-	printf("Pattern: %s\n", pattern);
-
-	if (verbose) {
-		/* Hexadecimal OpenSSL notation */
-		pend = key_buf;
-		len = i2o_ECPublicKey(pkey, &pend);
-		printf("Pubkey (hex)  : ");
-		dumphex(key_buf, len);
-		pend = key_buf;
-		len = i2d_ECPrivateKey(pkey, &pend);
-		printf("Privkey (hex) : ");
-		dumphex(key_buf, len);
+	if (!result_file || (verbose > 0)) {
+		printf("\r%79s\rPattern: %s\n", "", pattern);
 	}
 
-	/* Base-58 bitcoin notation public key hash */
-	encode_address(pkey, addrtype, print_buf);
-	printf("Address: %s\n", print_buf);
+	if (verbose > 0) {
+		if (verbose > 1) {
+			/* Hexadecimal OpenSSL notation */
+			pend = key_buf;
+			len = i2o_ECPublicKey(pkey, &pend);
+			printf("Pubkey (hex)  : ");
+			dumphex(key_buf, len);
+			pend = key_buf;
+			len = i2d_ECPrivateKey(pkey, &pend);
+			printf("Privkey (hex) : ");
+			dumphex(key_buf, len);
+		}
 
-	/* Base-58 bitcoin notation private key */
-	encode_privkey(pkey, privtype, print_buf);
-	printf("Privkey: %s\n", print_buf);
+	}
+
+	if (!result_file || (verbose > 0)) {
+		printf("Address: %s\n"
+		       "Privkey: %s\n",
+		       addr_buf, privkey_buf);
+	}
+
+	if (result_file) {
+		FILE *fp = fopen(result_file, "a");
+		if (!fp) {
+			printf("ERROR: could not open result file: %s\n",
+			       strerror(errno));
+		} else {
+			fprintf(fp,
+				"Pattern: %s\n"
+				"Address: %s\n"
+				"Privkey: %s\n",
+				pattern, addr_buf, privkey_buf);
+			fclose(fp);
+		}
+	}
 }
 
-signed char b58_reverse_map[256] = {
+const signed char b58_reverse_map[256] = {
 	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
 	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
 	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
@@ -1169,7 +1214,7 @@ typedef struct _prefix_case_iter_s {
 	int	ci_value;
 } prefix_case_iter_t;
 
-unsigned char b58_case_map[256] = {
+const unsigned char b58_case_map[256] = {
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -1227,9 +1272,11 @@ prefix_case_iter_next(prefix_case_iter_t *cip)
 
 typedef struct _vg_prefix_context_s {
 	avl_root_t		vcp_avlroot;
-	int			vcp_npfx;
 	int			vcp_addrtype;
 	int			vcp_privtype;
+	unsigned long		vcp_npfx;
+	unsigned long		vcp_npfx_start;
+	unsigned long long	vcp_found;
 	double			vcp_chance;
 	BIGNUM			vcp_difficulty;
 	pthread_mutex_t		vcp_lock;
@@ -1239,7 +1286,7 @@ void
 vg_prefix_context_free(vg_prefix_context_t *vcpp)
 {
 	vg_prefix_t *vp;
-	int npfx_left = 0;
+	unsigned long npfx_left = 0;
 
 	while (!avl_root_empty(&vcpp->vcp_avlroot)) {
 		vp = avl_item_entry(vcpp->vcp_avlroot.ar_root,
@@ -1265,11 +1312,13 @@ vg_prefix_context_next_difficulty(vg_prefix_context_t *vcpp,
 	BN_div(bntmp2, NULL, bntmp, &vcpp->vcp_difficulty, bnctx);
 
 	dbuf = BN_bn2dec(bntmp2);
-	if (vcpp->vcp_npfx > 1)
-		printf("Next match difficulty: %s (%d prefixes)\n",
-		       dbuf, vcpp->vcp_npfx);
-	else
-		printf("Difficulty: %s\n", dbuf);
+	if (verbose > 0) {
+		if (vcpp->vcp_npfx > 1)
+			printf("Next match difficulty: %s (%ld prefixes)\n",
+			       dbuf, vcpp->vcp_npfx);
+		else
+			printf("Difficulty: %s\n", dbuf);
+	}
 	vcpp->vcp_chance = atof(dbuf);
 	OPENSSL_free(dbuf);
 }
@@ -1283,6 +1332,9 @@ vg_prefix_context_new(int addrtype, int privtype)
 	if (vcpp) {
 		vcpp->vcp_addrtype = addrtype;
 		vcpp->vcp_privtype = privtype;
+		vcpp->vcp_npfx = 0;
+		vcpp->vcp_npfx_start = 0;
+		vcpp->vcp_found = 0;
 		avl_root_init(&vcpp->vcp_avlroot);
 		BN_init(&vcpp->vcp_difficulty);
 		pthread_mutex_init(&vcpp->vcp_lock, NULL);
@@ -1301,7 +1353,8 @@ vg_prefix_context_add_patterns(vg_prefix_context_t *vcpp,
 	BIGNUM bntmp, bntmp2, bntmp3;
 	BIGNUM *ranges[4];
 	int ret = 0;
-	int i, npfx, fail;
+	int i, fail;
+	unsigned long npfx;
 	char *dbuf;
 
 	bnctx = BN_CTX_new();
@@ -1373,7 +1426,7 @@ vg_prefix_context_add_patterns(vg_prefix_context_t *vcpp,
 		BN_add(&bntmp2, &vcpp->vcp_difficulty, &bntmp);
 		BN_copy(&vcpp->vcp_difficulty, &bntmp2);
 
-		if (verbose) {
+		if (verbose > 1) {
 			BN_clear(&bntmp2);
 			BN_set_bit(&bntmp2, 192);
 			BN_div(&bntmp3, NULL, &bntmp2, &bntmp, bnctx);
@@ -1385,7 +1438,8 @@ vg_prefix_context_add_patterns(vg_prefix_context_t *vcpp,
 		}
 	}
 
-	vcpp->vcp_npfx = npfx;
+	vcpp->vcp_npfx += npfx;
+	vcpp->vcp_npfx_start += npfx;
 
 	if (avl_root_empty(&vcpp->vcp_avlroot)) {
 		printf("No prefix patterns to search\n");
@@ -1509,8 +1563,6 @@ generate_address_prefix(vg_prefix_context_t *vcpp)
 		pthread_mutex_lock(&vcpp->vcp_lock);
 		vp = vg_prefix_avl_search(&vcpp->vcp_avlroot, &bntarg);
 		if (vp) {
-			printf("\n");
-
 			if (npoints) {
 				BN_clear(&bntmp);
 				BN_set_word(&bntmp, npoints);
@@ -1529,23 +1581,31 @@ generate_address_prefix(vg_prefix_context_t *vcpp)
 				     vcpp->vcp_addrtype,
 				     vcpp->vcp_privtype);
 
-			/* Subtract the range from the difficulty */
-			vg_prefix_range_sum(vp, &bntarg, &bntmp, &bntmp2);
-			BN_sub(&bntmp, &vcpp->vcp_difficulty, &bntarg);
-			BN_copy(&vcpp->vcp_difficulty, &bntmp);
+			vcpp->vcp_found++;
 
-			vg_prefix_delete(&vcpp->vcp_avlroot, vp);
-			vcpp->vcp_npfx--;
-			if (avl_root_empty(&vcpp->vcp_avlroot))
-				break;
+			if (remove_on_match) {
+				/* Subtract the range from the difficulty */
+				vg_prefix_range_sum(vp, &bntarg,
+						    &bntmp, &bntmp2);
+				BN_sub(&bntmp, &vcpp->vcp_difficulty, &bntarg);
+				BN_copy(&vcpp->vcp_difficulty, &bntmp);
 
-			vg_prefix_context_next_difficulty(vcpp, &bntmp,
-							  &bntmp2,
-							  bnctx);
+				vg_prefix_delete(&vcpp->vcp_avlroot, vp);
+				vcpp->vcp_npfx--;
+				if (avl_root_empty(&vcpp->vcp_avlroot))
+					break;
+
+				vg_prefix_context_next_difficulty(vcpp, &bntmp,
+								  &bntmp2,
+								  bnctx);
+			}
 		}
 
 		if (++c >= 20000) {			
-			output_timing(c, &tvstart, vcpp->vcp_chance);
+			output_timing(c, &tvstart,
+				      vcpp->vcp_found,
+				   remove_on_match ? vcpp->vcp_npfx_start : 0,
+				      vcpp->vcp_chance);
 			c = 0;
 		}
 
@@ -1572,8 +1632,10 @@ typedef struct _vg_regex_context_s {
 	const char		**vcr_regex_pat;
 	int			vcr_addrtype;
 	int			vcr_privtype;
-	int			vcr_nres;
-	int			vcr_nalloc;
+	unsigned long long	vcr_found;
+	unsigned long		vcr_nres;
+	unsigned long		vcr_nres_start;
+	unsigned long		vcr_nalloc;
 	pthread_rwlock_t	vcr_lock;
 } vg_regex_context_t;
 
@@ -1585,8 +1647,10 @@ vg_regex_context_new(int addrtype, int privtype)
 	vcrp = (vg_regex_context_t *) malloc(sizeof(*vcrp));
 	if (vcrp) {
 		vcrp->vcr_regex = NULL;
+		vcrp->vcr_found = 0;
 		vcrp->vcr_nalloc = 0;
 		vcrp->vcr_nres = 0;
+		vcrp->vcr_nres_start = 0;
 		vcrp->vcr_addrtype = addrtype;
 		vcrp->vcr_privtype = privtype;
 		pthread_rwlock_init(&vcrp->vcr_lock, NULL);
@@ -1600,7 +1664,7 @@ vg_regex_context_add_patterns(vg_regex_context_t *vcrp,
 {
 	const char *pcre_errptr;
 	int pcre_erroffset;
-	int i, nres, count;
+	unsigned long i, nres, count;
 	void **mem;
 
 	if (!npatterns)
@@ -1663,6 +1727,7 @@ vg_regex_context_add_patterns(vg_regex_context_t *vcrp,
 	if (nres == vcrp->vcr_nres)
 		return 0;
 
+	vcrp->vcr_nres_start += (nres - vcrp->vcr_nres);
 	vcrp->vcr_nres = nres;
 	return 1;
 }
@@ -1842,8 +1907,6 @@ generate_address_regex(vg_regex_context_t *vcrp)
 				continue;
 			}
 
-			printf("\n");
-
 			if (npoints) {
 				BN_clear(&bntmp);
 				BN_set_word(&bntmp, npoints);
@@ -1861,23 +1924,30 @@ generate_address_regex(vg_regex_context_t *vcrp)
 			output_match(pkey, vcrp->vcr_regex_pat[i],
 				     vcrp->vcr_addrtype, vcrp->vcr_privtype);
 
-			pcre_free(vcrp->vcr_regex[i]);
-			if (vcrp->vcr_regex_extra[i])
-				pcre_free(vcrp->vcr_regex_extra[i]);
-			nres -= 1;
-			vcrp->vcr_nres = nres;
-			if (!nres)
-				goto out;
-			vcrp->vcr_regex[i] = vcrp->vcr_regex[nres];
-			vcrp->vcr_regex_extra[i] = vcrp->vcr_regex_extra[nres];
-			vcrp->vcr_regex_pat[i] = vcrp->vcr_regex_pat[nres];
-			vcrp->vcr_nres = nres;
+			vcrp->vcr_found++;
 
-			printf("Regular expressions: %d\n", nres);
+			if (remove_on_match) {
+				pcre_free(vcrp->vcr_regex[i]);
+				if (vcrp->vcr_regex_extra[i])
+					pcre_free(vcrp->vcr_regex_extra[i]);
+				nres -= 1;
+				vcrp->vcr_nres = nres;
+				if (!nres)
+					goto out;
+				vcrp->vcr_regex[i] = vcrp->vcr_regex[nres];
+				vcrp->vcr_regex_extra[i] =
+					vcrp->vcr_regex_extra[nres];
+				vcrp->vcr_regex_pat[i] =
+					vcrp->vcr_regex_pat[nres];
+				vcrp->vcr_nres = nres;
+			}
 		}
 
 		if (++c >= 10000) {
-			output_timing(c, &tvstart, 0.0);
+			output_timing(c, &tvstart,
+				      vcrp->vcr_found,
+				    remove_on_match ? vcrp->vcr_nres_start : 0,
+				      0.0);
 			c = 0;
 		}
 
@@ -2002,7 +2072,7 @@ start_threads(void *(*func)(void *), void *arg, int nthreads)
 		}
 	}
 
-	if (verbose) {
+	if (verbose > 1) {
 		printf("Using %d worker thread(s)\n", nthreads);
 	}
 
@@ -2021,7 +2091,7 @@ usage(const char *name)
 {
 	printf(
 "Vanitygen %s\n"
-"Usage: %s [-vriNT] [-t <threads>] [-f <filename>|-] [<pattern>...]\n"
+"Usage: %s [-vqrikNT] [-t <threads>] [-f <filename>|-] [<pattern>...]\n"
 "Generates a bitcoin receiving address matching <pattern>, and outputs the\n"
 "address and associated private key.  The private key may be stored in a safe\n"
 "location or imported into a bitcoin client to spend any balance received on\n"
@@ -2030,14 +2100,17 @@ usage(const char *name)
 "\n"
 "Options:\n"
 "-v            Verbose output\n"
+"-q            Quiet output\n"
 "-r            Use regular expression match instead of prefix\n"
 "              (Feasibility of expression is not checked)\n"
 "-i            Case-insensitive prefix search\n"
+"-k            Keep pattern and continue search after finding a match\n"
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
 "-t <threads>  Set number of worker threads (Default: number of CPUs)\n"
 "-f <file>     File containing list of patterns, one per line\n"
-"              (Use \"-\" as the file name for stdin)\n",
+"              (Use \"-\" as the file name for stdin)\n"
+"-o <file>     Write pattern matches to <file>\n",
 version, name);
 }
 
@@ -2056,16 +2129,22 @@ main(int argc, char **argv)
 	void *(*thread_func)(void *) = NULL;
 	void *thread_arg = NULL;
 
-	while ((opt = getopt(argc, argv, "vriNTt:h?f:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqrikNTt:h?f:o:")) != -1) {
 		switch (opt) {
 		case 'v':
-			verbose = 1;
+			verbose = 2;
+			break;
+		case 'q':
+			verbose = 0;
 			break;
 		case 'r':
 			regex = 1;
 			break;
 		case 'i':
 			caseinsensitive = 1;
+			break;
+		case 'k':
+			remove_on_match = 0;
 			break;
 		case 'N':
 			addrtype = 52;
@@ -2097,6 +2176,13 @@ main(int argc, char **argv)
 				}
 			}
 			break;
+		case 'o':
+			if (result_file) {
+				printf("Multiple output files specified\n");
+				return 1;
+			}
+			result_file = optarg;
+			break;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -2112,6 +2198,8 @@ main(int argc, char **argv)
 			printf("Failed to load pattern file\n");
 			return 1;
 		}
+		if (fp != stdin)
+			fclose(fp);
 
 	} else {
 		if (optind >= argc) {
@@ -2127,8 +2215,8 @@ main(int argc, char **argv)
 		vcrp = vg_regex_context_new(addrtype, privtype);
 		if (!vg_regex_context_add_patterns(vcrp, patterns, npatterns))
 			return 1;
-		if (vcrp->vcr_nres > 1)
-			printf("Regular expressions: %d\n", vcrp->vcr_nres);
+		if ((verbose > 0) && (vcrp->vcr_nres > 1))
+			printf("Regular expressions: %ld\n", vcrp->vcr_nres);
 
 		thread_func = (void *(*)(void*)) generate_address_regex;
 		thread_arg = vcrp;

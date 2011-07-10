@@ -32,3 +32,12 @@ Version 0.6, released July 8 2011:
 Version 0.7, released July 8 2011:
 	- Use GetLogicalProcessorInformation() to count CPUs on Windows,
 	  because GetActiveProcessorCount() is Windows 7 and newer.
+
+Version 0.8, released July 8 2011:
+	- Fix recalculation of difficulty after a match when searching 
+	  for multiple prefixes.
+
+Version 0.9, released July 10 2011:
+	- Add flag to retain patterns after being matched
+	- Add output/result file option
+	- Add quiet option and clean up status bar display
