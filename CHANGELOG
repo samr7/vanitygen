@@ -41,3 +41,10 @@ Version 0.9, released July 10 2011:
 	- Add flag to retain patterns after being matched
 	- Add output/result file option
 	- Add quiet option and clean up status bar display
+
+Version 0.10, released July 12 2011:
+	- Improve performance using modular inverse optimization
+
+Version 0.11, released July 12 2011:
+	- Add new thread synchronization lock
+	- Add seed file option for RNG

@@ -28,6 +28,7 @@
 #include <openssl/ec.h>
 #include <openssl/obj_mac.h>
 #include <openssl/bn.h>
+#include <openssl/rand.h>
 
 #include <pcre.h>
 
@@ -36,11 +37,12 @@
 #include <sys/time.h>
 #include <errno.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #else
 #include "winglue.c"
 #endif
 
-const char *version = "0.10";
+const char *version = "0.11";
 const int debug = 0;
 int verbose = 1;
 int remove_on_match = 1;
@@ -165,15 +167,20 @@ dumpbn(const BIGNUM *bn)
 
 
 typedef struct _vg_thread_context_s {
-	BN_CTX		*vct_bnctx;
-	EC_KEY		*vct_key;
-	EC_POINT	*vct_point;
-	int		vct_delta;
-	unsigned char	vct_binres[25];
-	BIGNUM		vct_bntarg;
-	BIGNUM		vct_bnbase;
-	BIGNUM		vct_bntmp;
-	BIGNUM		vct_bntmp2;
+	BN_CTX				*vct_bnctx;
+	EC_KEY				*vct_key;
+	EC_POINT			*vct_point;
+	int				vct_delta;
+	int				vct_flags;
+	unsigned char			vct_binres[25];
+	BIGNUM				vct_bntarg;
+	BIGNUM				vct_bnbase;
+	BIGNUM				vct_bntmp;
+	BIGNUM				vct_bntmp2;
+
+	struct _vg_thread_context_s	*vct_next;
+	int				vct_mode;
+	int				vct_stop;
 } vg_thread_context_t;
 
 
@@ -396,6 +403,157 @@ output_match(EC_KEY *pkey, const char *pattern, vg_context_t *vcp)
 
 
 /*
+ * To synchronize pattern lists, we use a special shared-exclusive lock
+ * geared toward being held in shared mode 99.9% of the time.
+ */
+
+static pthread_mutex_t vg_thread_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t vg_thread_rdcond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t vg_thread_wrcond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t vg_thread_upcond = PTHREAD_COND_INITIALIZER;
+static vg_thread_context_t *vg_threads = NULL;
+static int vg_thread_excl = 0;
+
+void
+__vg_thread_yield(vg_thread_context_t *vctp)
+{
+	vctp->vct_mode = 0;
+	while (vg_thread_excl) {
+		if (vctp->vct_stop) {
+			assert(vg_thread_excl);
+			vctp->vct_stop = 0;
+			pthread_cond_signal(&vg_thread_upcond);
+		}
+		pthread_cond_wait(&vg_thread_rdcond, &vg_thread_lock);
+	}
+	assert(!vctp->vct_stop);
+	assert(!vctp->vct_mode);
+	vctp->vct_mode = 1;
+}
+
+void
+vg_thread_downgrade_lock(vg_thread_context_t *vctp)
+{
+	pthread_mutex_lock(&vg_thread_lock);
+
+	assert(vctp->vct_mode == 2);
+	assert(!vctp->vct_stop);
+	if (!--vg_thread_excl) {
+		vctp->vct_mode = 1;
+		pthread_cond_broadcast(&vg_thread_rdcond);
+		pthread_mutex_unlock(&vg_thread_lock);
+		return;
+	}
+	pthread_cond_signal(&vg_thread_wrcond);
+	__vg_thread_yield(vctp);
+	pthread_mutex_unlock(&vg_thread_lock);
+}
+
+void
+vg_thread_init_lock(vg_thread_context_t *vctp)
+{
+	vctp->vct_mode = 0;
+	vctp->vct_stop = 0;
+
+	pthread_mutex_lock(&vg_thread_lock);
+	vctp->vct_next = vg_threads;
+	vg_threads = vctp;
+	__vg_thread_yield(vctp);
+	pthread_mutex_unlock(&vg_thread_lock);
+}
+
+void
+vg_thread_del_lock(vg_thread_context_t *vctp)
+{
+	vg_thread_context_t *tp, **pprev;
+
+	if (vctp->vct_mode == 2)
+		vg_thread_downgrade_lock(vctp);
+
+	pthread_mutex_lock(&vg_thread_lock);
+	assert(vctp->vct_mode == 1);
+	vctp->vct_mode = 0;
+
+	for (pprev = &vg_threads, tp = *pprev;
+	     (tp != vctp) && (tp != NULL);
+	     pprev = &tp->vct_next, tp = *pprev);
+
+	assert(tp == vctp);
+	*pprev = tp->vct_next;
+
+	if (tp->vct_stop)
+		pthread_cond_signal(&vg_thread_upcond);
+
+	pthread_mutex_unlock(&vg_thread_lock);
+}
+
+int
+vg_thread_upgrade_lock(vg_thread_context_t *vctp)
+{
+	vg_thread_context_t *tp;
+
+	if (vctp->vct_mode == 2)
+		return 0;
+
+	pthread_mutex_lock(&vg_thread_lock);
+
+	assert(vctp->vct_mode == 1);
+	vctp->vct_mode = 0;
+
+	if (vg_thread_excl++) {
+		assert(vctp->vct_stop);
+		vctp->vct_stop = 0;
+		pthread_cond_signal(&vg_thread_upcond);
+		pthread_cond_wait(&vg_thread_wrcond, &vg_thread_lock);
+
+		for (tp = vg_threads; tp != NULL; tp = tp->vct_next) {
+			assert(!tp->vct_mode);
+			assert(!tp->vct_stop);
+		}
+
+	} else {
+		for (tp = vg_threads; tp != NULL; tp = tp->vct_next) {
+			if (tp->vct_mode) {
+				assert(tp->vct_mode != 2);
+				tp->vct_stop = 1;
+			}
+		}
+
+		do {
+			for (tp = vg_threads; tp != NULL; tp = tp->vct_next) {
+				if (tp->vct_mode) {
+					assert(tp->vct_mode != 2);
+					pthread_cond_wait(&vg_thread_upcond,
+							  &vg_thread_lock);
+					break;
+				}
+			}
+		} while (tp);
+	}
+
+	vctp->vct_mode = 2;
+	pthread_mutex_unlock(&vg_thread_lock);
+	return 1;
+}
+
+void
+vg_thread_yield(vg_thread_context_t *vctp)
+{
+	if (vctp->vct_mode == 2)
+		vg_thread_downgrade_lock(vctp);
+
+	else if (vctp->vct_stop) {
+		assert(vctp->vct_mode == 1);
+		pthread_mutex_lock(&vg_thread_lock);
+		__vg_thread_yield(vctp);
+		pthread_mutex_unlock(&vg_thread_lock);
+	}
+
+	assert(vctp->vct_mode == 1);
+}
+
+
+/*
  * Address search thread main loop
  */
 
@@ -407,6 +565,7 @@ vg_thread_loop(vg_context_t *vcp)
 
 	int i, c, len;
 
+	const BN_ULONG rekey_max = 10000000;
 	BN_ULONG npoints, rekey_at, nbatch;
 
 	EC_KEY *pkey = NULL;
@@ -415,12 +574,11 @@ vg_thread_loop(vg_context_t *vcp)
 	const int ptarraysize = 256;
 	EC_POINT *ppnt[ptarraysize];
 
-	vg_thread_context_t ctx;
 	vg_test_func_t test_func = vcp->vc_test;
+	vg_thread_context_t ctx;
 
 	struct timeval tvstart;
 
-	static pthread_mutex_t crypto_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 	memset(ctx.vct_binres, 0, sizeof(ctx.vct_binres));
 
@@ -432,7 +590,7 @@ vg_thread_loop(vg_context_t *vcp)
 
 	BN_set_word(&ctx.vct_bnbase, 58);
 
-	pthread_mutex_lock(&crypto_mutex);
+	pthread_mutex_lock(&vg_thread_lock);
 	pkey = EC_KEY_new_by_curve_name(NID_secp256k1);
 	assert(pkey);
 	pgroup = EC_KEY_get0_group(pkey);
@@ -441,7 +599,8 @@ vg_thread_loop(vg_context_t *vcp)
 	assert(pgen);
 
 	EC_KEY_precompute_mult(pkey, ctx.vct_bnctx);
-	pthread_mutex_unlock(&crypto_mutex);
+
+	pthread_mutex_unlock(&vg_thread_lock);
 
 	for (i = 0; i < ptarraysize; i++) {
 		ppnt[i] = EC_POINT_new(pgroup);
@@ -451,16 +610,20 @@ vg_thread_loop(vg_context_t *vcp)
 		}
 	}
 
+	vg_thread_init_lock(&ctx);
+
 	npoints = 0;
 	rekey_at = 0;
 	nbatch = 0;
+	ctx.vct_flags = 0;
 	ctx.vct_key = pkey;
 	ctx.vct_binres[0] = vcp->vc_addrtype;
 	c = 0;
 	gettimeofday(&tvstart, NULL);
+
 	while (1) {
-		if (npoints >= rekey_at) {
-			pthread_mutex_lock(&crypto_mutex);
+		if (++npoints >= rekey_at) {
+			pthread_mutex_lock(&vg_thread_lock);
 			/* Generate a new random private key */
 			EC_KEY_generate_key(pkey);
 			npoints = 0;
@@ -472,12 +635,12 @@ vg_thread_loop(vg_context_t *vcp)
 			       &ctx.vct_bntmp,
 			       EC_KEY_get0_private_key(pkey));
 			rekey_at = BN_get_word(&ctx.vct_bntmp2);
-			if ((rekey_at == BN_MASK2) || (rekey_at > 1000000))
-				rekey_at = 1000000;
+			if ((rekey_at == BN_MASK2) || (rekey_at > rekey_max))
+				rekey_at = rekey_max;
 			assert(rekey_at > 0);
 
 			EC_POINT_copy(ppnt[0], EC_KEY_get0_public_key(pkey));
-			pthread_mutex_unlock(&crypto_mutex);
+			pthread_mutex_unlock(&vg_thread_lock);
 
 			npoints++;
 			ctx.vct_delta = 0;
@@ -488,7 +651,6 @@ vg_thread_loop(vg_context_t *vcp)
 				     ppnt[0],
 				     ppnt[nbatch-1],
 				     pgen, ctx.vct_bnctx);
-			npoints++;
 		}
 
 		/*
@@ -541,9 +703,13 @@ vg_thread_loop(vg_context_t *vcp)
 			output_timing(c, &tvstart, vcp);
 			c = 0;
 		}
+
+		vg_thread_yield(&ctx);
 	}
 
 out:
+	vg_thread_del_lock(&ctx);
+
 	BN_clear_free(&ctx.vct_bntarg);
 	BN_clear_free(&ctx.vct_bnbase);
 	BN_clear_free(&ctx.vct_bntmp);
@@ -1468,7 +1634,6 @@ typedef struct _vg_prefix_context_s {
 	vg_context_t		base;
 	avl_root_t		vcp_avlroot;
 	BIGNUM			vcp_difficulty;
-	pthread_mutex_t		vcp_lock;
 } vg_prefix_context_t;
 
 void
@@ -1486,7 +1651,6 @@ vg_prefix_context_free(vg_prefix_context_t *vcpp)
 
 	assert(npfx_left == vcpp->base.vc_npatterns);
 	BN_clear_free(&vcpp->vcp_difficulty);
-	pthread_mutex_destroy(&vcpp->vcp_lock);
 	free(vcpp);
 }
 
@@ -1649,9 +1813,12 @@ vg_prefix_test(vg_context_t *vcp, vg_thread_context_t *vctp)
 	BN_bin2bn(vctp->vct_binres, sizeof(vctp->vct_binres),
 		  &vctp->vct_bntarg);
 
-	pthread_mutex_lock(&vcpp->vcp_lock);
+retry:
 	vp = vg_prefix_avl_search(&vcpp->vcp_avlroot, &vctp->vct_bntarg);
 	if (vp) {
+		if (vg_thread_upgrade_lock(vctp))
+			goto retry;
+
 		BN_clear(&vctp->vct_bntmp);
 		BN_set_word(&vctp->vct_bntmp, vctp->vct_delta);
 		BN_add(&vctp->vct_bntmp2,
@@ -1689,10 +1856,8 @@ vg_prefix_test(vg_context_t *vcp, vg_thread_context_t *vctp)
 		res = 1;
 	}
 	if (avl_root_empty(&vcpp->vcp_avlroot)) {
-		pthread_mutex_unlock(&vcpp->vcp_lock);
 		return 2;
 	}
-	pthread_mutex_unlock(&vcpp->vcp_lock);
 	return res;
 }
 
@@ -1712,7 +1877,6 @@ vg_prefix_context_new(int addrtype, int privtype)
 		vcpp->base.vc_test = vg_prefix_test;
 		avl_root_init(&vcpp->vcp_avlroot);
 		BN_init(&vcpp->vcp_difficulty);
-		pthread_mutex_init(&vcpp->vcp_lock, NULL);
 	}
 	return vcpp;
 }
@@ -1726,7 +1890,6 @@ typedef struct _vg_regex_context_s {
 	pcre_extra		**vcr_regex_extra;
 	const char		**vcr_regex_pat;
 	unsigned long		vcr_nalloc;
-	pthread_rwlock_t	vcr_lock;
 } vg_regex_context_t;
 
 int
@@ -1814,7 +1977,6 @@ vg_regex_context_free(vg_regex_context_t *vcrp)
 	}
 	if (vcrp->vcr_nalloc)
 		free(vcrp->vcr_regex);
-	pthread_rwlock_destroy(&vcrp->vcr_lock);
 	free(vcrp);
 }
 
@@ -1864,7 +2026,7 @@ vg_regex_test(vg_context_t *vcp, vg_thread_context_t *vctp)
 	 * Run the regular expressions on it
 	 * SLOW, runs in linear time with the number of REs
 	 */
-	pthread_rwlock_rdlock(&vcrp->vcr_lock);
+restart_loop:
 	nres = vcrp->base.vc_npatterns;
 	if (!nres) {
 		res = 2;
@@ -1887,21 +2049,11 @@ vg_regex_test(vg_context_t *vcp, vg_thread_context_t *vctp)
 		}
 
 		re = vcrp->vcr_regex[i];
-		pthread_rwlock_unlock(&vcrp->vcr_lock);
-		pthread_rwlock_wrlock(&vcrp->vcr_lock);
-		nres = vcrp->base.vc_npatterns;
-		if ((i >= nres) || (vcrp->vcr_regex[i] != re)) {
-			/* Redo the search */
-			i = -1;
-			pthread_rwlock_unlock(&vcrp->vcr_lock);
-			pthread_rwlock_rdlock(&vcrp->vcr_lock);
-			nres = vcrp->base.vc_npatterns;
-			if (!nres) {
-				res = 2;
-				goto out;
-			}
-			continue;
-		}
+
+		if (vg_thread_upgrade_lock(vctp) &&
+		    ((i >= vcrp->base.vc_npatterns) ||
+		     (vcrp->vcr_regex[i] != re)))
+			goto restart_loop;
 
 		BN_clear(&vctp->vct_bntmp);
 		BN_set_word(&vctp->vct_bntmp, vctp->vct_delta);
@@ -1937,11 +2089,9 @@ vg_regex_test(vg_context_t *vcp, vg_thread_context_t *vctp)
 		res = 1;
 	}
 out:
-	pthread_rwlock_unlock(&vcrp->vcr_lock);
 	BN_clear_free(&bnrem);
 	return res;
 }
-
 
 vg_regex_context_t *
 vg_regex_context_new(int addrtype, int privtype)
@@ -1959,7 +2109,6 @@ vg_regex_context_new(int addrtype, int privtype)
 		vcrp->base.vc_test = vg_regex_test;
 		vcrp->vcr_regex = NULL;
 		vcrp->vcr_nalloc = 0;
-		pthread_rwlock_init(&vcrp->vcr_lock, NULL);
 	}
 	return vcrp;
 }
@@ -2106,7 +2255,8 @@ usage(const char *name)
 "-t <threads>  Set number of worker threads (Default: number of CPUs)\n"
 "-f <file>     File containing list of patterns, one per line\n"
 "              (Use \"-\" as the file name for stdin)\n"
-"-o <file>     Write pattern matches to <file>\n",
+"-o <file>     Write pattern matches to <file>\n"
+"-s <file>     Seed random number generator from <file>\n",
 version, name);
 }
 
@@ -2118,13 +2268,14 @@ main(int argc, char **argv)
 	int regex = 0;
 	int caseinsensitive = 0;
 	int opt;
+	char *seedfile = NULL;
 	FILE *fp = NULL;
 	char **patterns;
 	int npatterns = 0;
 	int nthreads = 0;
 	void *thread_arg = NULL;
 
-	while ((opt = getopt(argc, argv, "vqrikNTt:h?f:o:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqrikNTt:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -2163,7 +2314,7 @@ main(int argc, char **argv)
 			if (!strcmp(optarg, "-")) {
 				fp = stdin;
 			} else {
-				fp = fopen(optarg, "r+");
+				fp = fopen(optarg, "r");
 				if (!fp) {
 					printf("Could not open %s: %s\n",
 					       optarg, strerror(errno));
@@ -2178,6 +2329,12 @@ main(int argc, char **argv)
 			}
 			result_file = optarg;
 			break;
+		case 's':
+			if (seedfile != NULL) {
+				printf("Multiple RNG seeds specified\n");
+				return 1;
+			}
+			seedfile = optarg;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -2187,6 +2344,25 @@ main(int argc, char **argv)
 	if (caseinsensitive && regex)
 		printf("WARNING: case insensitive mode incompatible with "
 		       "regular expressions\n");
+
+	if (seedfile) {
+		opt = -1;
+#if !defined(_WIN32)
+		{	struct stat st;
+			if (!stat(optarg, &st) &&
+			    (st.st_mode & (S_IFBLK|S_IFCHR))) {
+				opt = 32;
+		} }
+#endif
+		opt = RAND_load_file(seedfile, opt);
+		if (!opt) {
+			printf("Could not load RNG seed %s\n", optarg);
+			return 1;
+		}
+		if (verbose > 0) {
+			printf("Read %d bytes from RNG seed file\n", opt);
+		}
+	}
 
 	if (fp) {
 		if (!read_file(fp, &patterns, &npatterns)) {
