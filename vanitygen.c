@@ -40,7 +40,7 @@
 #include "winglue.c"
 #endif
 
-const char *version = "0.9";
+const char *version = "0.10";
 const int debug = 0;
 int verbose = 1;
 int remove_on_match = 1;
@@ -158,9 +158,40 @@ dumpbn(const BIGNUM *bn)
 {
 	char *buf;
 	buf = BN_bn2hex(bn);
-	printf("%s\n", buf);
-	OPENSSL_free(buf);
+	printf("%s\n", buf ? buf : "0");
+	if (buf)
+		OPENSSL_free(buf);
 }
+
+
+typedef struct _vg_thread_context_s {
+	BN_CTX		*vct_bnctx;
+	EC_KEY		*vct_key;
+	EC_POINT	*vct_point;
+	int		vct_delta;
+	unsigned char	vct_binres[25];
+	BIGNUM		vct_bntarg;
+	BIGNUM		vct_bnbase;
+	BIGNUM		vct_bntmp;
+	BIGNUM		vct_bntmp2;
+} vg_thread_context_t;
+
+
+struct _vg_context_s;
+
+typedef int (*vg_test_func_t)(struct _vg_context_s *,
+			      vg_thread_context_t *);
+
+typedef struct _vg_context_s {
+	int			vc_addrtype;
+	int			vc_privtype;
+	unsigned long		vc_npatterns;
+	unsigned long		vc_npatterns_start;
+	unsigned long long	vc_found;
+	double			vc_chance;
+	vg_test_func_t		vc_test;
+} vg_context_t;
+
 
 typedef struct _timing_info_s {
 	struct _timing_info_s	*ti_next;
@@ -169,9 +200,7 @@ typedef struct _timing_info_s {
 } timing_info_t;
 
 void
-output_timing(int cycle, struct timeval *last,
-	      unsigned long long found, unsigned long pattcount,
-	      double chance)
+output_timing(int cycle, struct timeval *last, vg_context_t *vcp)
 {
 	static unsigned long long total = 0, prevfound = 0, sincelast = 0;
 	static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -214,8 +243,8 @@ output_timing(int cycle, struct timeval *last,
 	}
 
 	total += cycle;
-	if (prevfound != found) {
-		prevfound = found;
+	if (prevfound != vcp->vc_found) {
+		prevfound = vcp->vc_found;
 		sincelast = 0;
 	}
 	sincelast += cycle;
@@ -234,8 +263,8 @@ output_timing(int cycle, struct timeval *last,
 	if (rem < 0)
 		rem = 0;
 
-	if (chance >= 1.0) {
-		prob = 1.0f - exp(-count/chance);
+	if (vcp->vc_chance >= 1.0) {
+		prob = 1.0f - exp(-count/vcp->vc_chance);
 
 		if (prob <= 0.999) {
 			p = snprintf(&linebuf[p], rem, "[Prob %.1f%%]",
@@ -254,7 +283,8 @@ output_timing(int cycle, struct timeval *last,
 		}
 
 		if (targ < 1.0) {
-			time = ((-chance * log(1.0 - targ)) - count) / rate;
+			time = ((-vcp->vc_chance * log(1.0 - targ)) - count) /
+				rate;
 			unit = "s";
 			if (time > 60) {
 				time /= 60;
@@ -290,12 +320,13 @@ output_timing(int cycle, struct timeval *last,
 		}
 	}
 
-	if (found) {
-		if (pattcount)
+	if (vcp->vc_found) {
+		if (remove_on_match)
 			p = snprintf(&linebuf[p], rem, "[Found %lld/%ld]",
-				     found, pattcount);
+				     vcp->vc_found, vcp->vc_npatterns_start);
 		else
-			p = snprintf(&linebuf[p], rem, "[Found %lld]", found);
+			p = snprintf(&linebuf[p], rem, "[Found %lld]",
+				     vcp->vc_found);
 		assert(p > 0);
 		rem -= p;
 		if (rem < 0)
@@ -311,7 +342,7 @@ output_timing(int cycle, struct timeval *last,
 }
 
 void
-output_match(EC_KEY *pkey, const char *pattern, int addrtype, int privtype)
+output_match(EC_KEY *pkey, const char *pattern, vg_context_t *vcp)
 {
 	unsigned char key_buf[512], *pend;
 	char addr_buf[64];
@@ -319,8 +350,8 @@ output_match(EC_KEY *pkey, const char *pattern, int addrtype, int privtype)
 	int len;
 
 	assert(EC_KEY_check_key(pkey));
-	encode_address(pkey, addrtype, addr_buf);
-	encode_privkey(pkey, privtype, privkey_buf);
+	encode_address(pkey, vcp->vc_addrtype, addr_buf);
+	encode_privkey(pkey, vcp->vc_privtype, privkey_buf);
 
 	if (!result_file || (verbose > 0)) {
 		printf("\r%79s\rPattern: %s\n", "", pattern);
@@ -331,11 +362,11 @@ output_match(EC_KEY *pkey, const char *pattern, int addrtype, int privtype)
 			/* Hexadecimal OpenSSL notation */
 			pend = key_buf;
 			len = i2o_ECPublicKey(pkey, &pend);
-			printf("Pubkey (hex)  : ");
+			printf("Pubkey (ASN1): ");
 			dumphex(key_buf, len);
 			pend = key_buf;
 			len = i2d_ECPrivateKey(pkey, &pend);
-			printf("Privkey (hex) : ");
+			printf("Privkey (ASN1): ");
 			dumphex(key_buf, len);
 		}
 
@@ -362,6 +393,169 @@ output_match(EC_KEY *pkey, const char *pattern, int addrtype, int privtype)
 		}
 	}
 }
+
+
+/*
+ * Address search thread main loop
+ */
+
+void *
+vg_thread_loop(vg_context_t *vcp)
+{
+	unsigned char eckey_buf[128];
+	unsigned char hash1[32];
+
+	int i, c, len;
+
+	BN_ULONG npoints, rekey_at, nbatch;
+
+	EC_KEY *pkey = NULL;
+	const EC_GROUP *pgroup;
+	const EC_POINT *pgen;
+	const int ptarraysize = 256;
+	EC_POINT *ppnt[ptarraysize];
+
+	vg_thread_context_t ctx;
+	vg_test_func_t test_func = vcp->vc_test;
+
+	struct timeval tvstart;
+
+	static pthread_mutex_t crypto_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+	memset(ctx.vct_binres, 0, sizeof(ctx.vct_binres));
+
+	ctx.vct_bnctx = BN_CTX_new();
+	BN_init(&ctx.vct_bntarg);
+	BN_init(&ctx.vct_bnbase);
+	BN_init(&ctx.vct_bntmp);
+	BN_init(&ctx.vct_bntmp2);
+
+	BN_set_word(&ctx.vct_bnbase, 58);
+
+	pthread_mutex_lock(&crypto_mutex);
+	pkey = EC_KEY_new_by_curve_name(NID_secp256k1);
+	assert(pkey);
+	pgroup = EC_KEY_get0_group(pkey);
+	assert(pgroup);
+	pgen = EC_GROUP_get0_generator(pgroup);
+	assert(pgen);
+
+	EC_KEY_precompute_mult(pkey, ctx.vct_bnctx);
+	pthread_mutex_unlock(&crypto_mutex);
+
+	for (i = 0; i < ptarraysize; i++) {
+		ppnt[i] = EC_POINT_new(pgroup);
+		if (!ppnt[i]) {
+			printf("ERROR: out of memory?\n");
+			exit(1);
+		}
+	}
+
+	npoints = 0;
+	rekey_at = 0;
+	nbatch = 0;
+	ctx.vct_key = pkey;
+	ctx.vct_binres[0] = vcp->vc_addrtype;
+	c = 0;
+	gettimeofday(&tvstart, NULL);
+	while (1) {
+		if (npoints >= rekey_at) {
+			pthread_mutex_lock(&crypto_mutex);
+			/* Generate a new random private key */
+			EC_KEY_generate_key(pkey);
+			npoints = 0;
+
+			/* Determine rekey interval */
+			EC_GROUP_get_order(pgroup, &ctx.vct_bntmp,
+					   ctx.vct_bnctx);
+			BN_sub(&ctx.vct_bntmp2,
+			       &ctx.vct_bntmp,
+			       EC_KEY_get0_private_key(pkey));
+			rekey_at = BN_get_word(&ctx.vct_bntmp2);
+			if ((rekey_at == BN_MASK2) || (rekey_at > 1000000))
+				rekey_at = 1000000;
+			assert(rekey_at > 0);
+
+			EC_POINT_copy(ppnt[0], EC_KEY_get0_public_key(pkey));
+			pthread_mutex_unlock(&crypto_mutex);
+
+			npoints++;
+			ctx.vct_delta = 0;
+
+		} else {
+			assert(nbatch > 0);
+			EC_POINT_add(pgroup,
+				     ppnt[0],
+				     ppnt[nbatch-1],
+				     pgen, ctx.vct_bnctx);
+			npoints++;
+		}
+
+		/*
+		 * The single most expensive operation performed in this
+		 * loop is modular inversion of ppnt->Z.  There is an
+		 * algorithm implemented in OpenSSL to do batched inversion
+		 * that only does one actual BN_mod_inverse(), and saves
+		 * a _lot_ of time.
+		 *
+		 * To take advantage of this, we batch up a few points,
+		 * and feed them to EC_POINTs_make_affine() below.
+		 */
+
+		for (nbatch = 1;
+		     (nbatch < ptarraysize) && (npoints < rekey_at);
+		     nbatch++, npoints++) {
+			EC_POINT_add(pgroup,
+				     ppnt[nbatch],
+				     ppnt[nbatch-1],
+				     pgen, ctx.vct_bnctx);
+		}
+
+		EC_POINTs_make_affine(pgroup, nbatch, ppnt, ctx.vct_bnctx);
+
+		for (i = 0; i < nbatch; i++, ctx.vct_delta++) {
+			/* Hash the public key */
+			len = EC_POINT_point2oct(pgroup, ppnt[i],
+						 POINT_CONVERSION_UNCOMPRESSED,
+						 eckey_buf, sizeof(eckey_buf),
+						 ctx.vct_bnctx);
+			SHA256(eckey_buf, len, hash1);
+			RIPEMD160(hash1, sizeof(hash1), &ctx.vct_binres[1]);
+
+			ctx.vct_point = ppnt[i];
+
+			switch (test_func(vcp, &ctx)) {
+			case 1:
+				npoints = 0;
+				rekey_at = 0;
+				i = nbatch;
+				break;
+			case 2:
+				goto out;
+			default:
+				break;
+			}
+		}
+
+		if ((c += nbatch) >= 50000) {
+			output_timing(c, &tvstart, vcp);
+			c = 0;
+		}
+	}
+
+out:
+	BN_clear_free(&ctx.vct_bntarg);
+	BN_clear_free(&ctx.vct_bnbase);
+	BN_clear_free(&ctx.vct_bntmp);
+	BN_clear_free(&ctx.vct_bntmp2);
+	BN_CTX_free(ctx.vct_bnctx);
+	EC_KEY_free(pkey);
+	for (i = 0; i < ptarraysize; i++)
+		EC_POINT_free(ppnt[i]);
+	return NULL;
+}
+
+
 
 const signed char b58_reverse_map[256] = {
 	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
@@ -1271,13 +1465,8 @@ prefix_case_iter_next(prefix_case_iter_t *cip)
 
 
 typedef struct _vg_prefix_context_s {
+	vg_context_t		base;
 	avl_root_t		vcp_avlroot;
-	int			vcp_addrtype;
-	int			vcp_privtype;
-	unsigned long		vcp_npfx;
-	unsigned long		vcp_npfx_start;
-	unsigned long long	vcp_found;
-	double			vcp_chance;
 	BIGNUM			vcp_difficulty;
 	pthread_mutex_t		vcp_lock;
 } vg_prefix_context_t;
@@ -1295,7 +1484,7 @@ vg_prefix_context_free(vg_prefix_context_t *vcpp)
 		npfx_left++;
 	}
 
-	assert(npfx_left == vcpp->vcp_npfx);
+	assert(npfx_left == vcpp->base.vc_npatterns);
 	BN_clear_free(&vcpp->vcp_difficulty);
 	pthread_mutex_destroy(&vcpp->vcp_lock);
 	free(vcpp);
@@ -1313,33 +1502,14 @@ vg_prefix_context_next_difficulty(vg_prefix_context_t *vcpp,
 
 	dbuf = BN_bn2dec(bntmp2);
 	if (verbose > 0) {
-		if (vcpp->vcp_npfx > 1)
+		if (vcpp->base.vc_npatterns > 1)
 			printf("Next match difficulty: %s (%ld prefixes)\n",
-			       dbuf, vcpp->vcp_npfx);
+			       dbuf, vcpp->base.vc_npatterns);
 		else
 			printf("Difficulty: %s\n", dbuf);
 	}
-	vcpp->vcp_chance = atof(dbuf);
+	vcpp->base.vc_chance = atof(dbuf);
 	OPENSSL_free(dbuf);
-}
-
-vg_prefix_context_t *
-vg_prefix_context_new(int addrtype, int privtype)
-{
-	vg_prefix_context_t *vcpp;
-
-	vcpp = (vg_prefix_context_t *) malloc(sizeof(*vcpp));
-	if (vcpp) {
-		vcpp->vcp_addrtype = addrtype;
-		vcpp->vcp_privtype = privtype;
-		vcpp->vcp_npfx = 0;
-		vcpp->vcp_npfx_start = 0;
-		vcpp->vcp_found = 0;
-		avl_root_init(&vcpp->vcp_avlroot);
-		BN_init(&vcpp->vcp_difficulty);
-		pthread_mutex_init(&vcpp->vcp_lock, NULL);
-	}
-	return vcpp;
 }
 
 int
@@ -1367,7 +1537,8 @@ vg_prefix_context_add_patterns(vg_prefix_context_t *vcpp,
 	for (i = 0; i < npatterns; i++) {
 		if (!caseinsensitive) {
 			vp = NULL;
-			if (get_prefix_ranges(vcpp->vcp_addrtype, patterns[i],
+			if (get_prefix_ranges(vcpp->base.vc_addrtype,
+					      patterns[i],
 					      ranges, bnctx)) {
 				vp = vg_prefix_add_ranges(&vcpp->vcp_avlroot,
 							  patterns[i],
@@ -1391,7 +1562,7 @@ vg_prefix_context_add_patterns(vg_prefix_context_t *vcpp,
 			vp = NULL;
 			fail = 0;
 			do {
-				if (!get_prefix_ranges(vcpp->vcp_addrtype,
+				if (!get_prefix_ranges(vcpp->base.vc_addrtype,
 						       caseiter.ci_prefix,
 						       ranges, bnctx)) {
 					fail = 1;
@@ -1438,8 +1609,8 @@ vg_prefix_context_add_patterns(vg_prefix_context_t *vcpp,
 		}
 	}
 
-	vcpp->vcp_npfx += npfx;
-	vcpp->vcp_npfx_start += npfx;
+	vcpp->base.vc_npatterns += npfx;
+	vcpp->base.vc_npatterns_start += npfx;
 
 	if (avl_root_empty(&vcpp->vcp_avlroot)) {
 		printf("No prefix patterns to search\n");
@@ -1461,202 +1632,102 @@ out:
 	return ret;
 }
 
-/*
- * Search for a key for which the encoded address has a specific prefix.
- * Uses bignum arithmetic to predetermine value ranges.
- * Faster than regular expression searching.
- */
-void *
-generate_address_prefix(vg_prefix_context_t *vcpp)
+
+int
+vg_prefix_test(vg_context_t *vcp, vg_thread_context_t *vctp)
 {
-	unsigned char eckey_buf[128];
-	unsigned char hash1[32];
-	unsigned char binres[25] = {0,};
-
-	int i, c;
-
-	BN_ULONG npoints, rekey_at;
-
-	BN_CTX *bnctx;
-	BIGNUM bntarg;
-	BIGNUM bnbase;
-	BIGNUM bntmp, bntmp2;
-
-	EC_KEY *pkey = NULL;
-	const EC_GROUP *pgroup;
-	const EC_POINT *pgen;
-	EC_POINT *ppnt = NULL;
-
-	struct timeval tvstart;
+	vg_prefix_context_t *vcpp = (vg_prefix_context_t *) vcp;
 	vg_prefix_t *vp;
+	int res = 0;
 
-	bnctx = BN_CTX_new();
+	/*
+	 * We constrain the prefix so that we can check for
+	 * a match without generating the lower four byte
+	 * check code.
+	 */
 
-	BN_init(&bntarg);
-	BN_init(&bnbase);
-	BN_init(&bntmp);
-	BN_init(&bntmp2);
-
-	BN_set_word(&bnbase, 58);
+	BN_bin2bn(vctp->vct_binres, sizeof(vctp->vct_binres),
+		  &vctp->vct_bntarg);
 
 	pthread_mutex_lock(&vcpp->vcp_lock);
-
-	pkey = EC_KEY_new_by_curve_name(NID_secp256k1);
-	pgroup = EC_KEY_get0_group(pkey);
-	pgen = EC_GROUP_get0_generator(pgroup);
-
-	EC_KEY_precompute_mult(pkey, bnctx);
-
-	pthread_mutex_unlock(&vcpp->vcp_lock);
-
-	npoints = 0;
-	rekey_at = 0;
-	binres[0] = vcpp->vcp_addrtype;
-	c = 0;
-	gettimeofday(&tvstart, NULL);
-	while (1) {
-		if (++npoints >= rekey_at) {
-			pthread_mutex_lock(&vcpp->vcp_lock);
-			if (avl_root_empty(&vcpp->vcp_avlroot))
-				break;
-
-			/* Generate a new random private key */
-			EC_KEY_generate_key(pkey);
-			npoints = 0;
-
-			pthread_mutex_unlock(&vcpp->vcp_lock);
-
-			/* Determine rekey interval */
-			EC_GROUP_get_order(pgroup, &bntmp, bnctx);
-			BN_sub(&bntmp2,
-			       &bntmp,
-			       EC_KEY_get0_private_key(pkey));
-			rekey_at = BN_get_word(&bntmp2);
-			if ((rekey_at == BN_MASK2) || (rekey_at > 1000000))
-				rekey_at = 1000000;
-			assert(rekey_at > 0);
-
-			if (ppnt)
-				EC_POINT_free(ppnt);
-			ppnt = EC_POINT_dup(EC_KEY_get0_public_key(pkey),
-					    pgroup);
-
-		} else {
-			/* Common case: next point */
-			EC_POINT_add(pgroup, ppnt, ppnt, pgen, bnctx);
-		}
-
-		/* Hash the public key */
-		i = EC_POINT_point2oct(pgroup, ppnt,
-				       POINT_CONVERSION_UNCOMPRESSED,
-				       eckey_buf, sizeof(eckey_buf), bnctx);
-		SHA256(eckey_buf, i, hash1);
-		RIPEMD160(hash1, sizeof(hash1), &binres[1]);
-
-		/*
-		 * We constrain the prefix so that we can check for a match
-		 * without generating the lower four byte check code.
-		 */
-
-		BN_bin2bn(binres, sizeof(binres), &bntarg);
-
-		pthread_mutex_lock(&vcpp->vcp_lock);
-		vp = vg_prefix_avl_search(&vcpp->vcp_avlroot, &bntarg);
-		if (vp) {
-			if (npoints) {
-				BN_clear(&bntmp);
-				BN_set_word(&bntmp, npoints);
-				BN_add(&bntmp2,
-				       EC_KEY_get0_private_key(pkey),
-				       &bntmp);
-				EC_KEY_set_private_key(pkey, &bntmp2);
-				EC_KEY_set_public_key(pkey, ppnt);
+	vp = vg_prefix_avl_search(&vcpp->vcp_avlroot, &vctp->vct_bntarg);
+	if (vp) {
+		BN_clear(&vctp->vct_bntmp);
+		BN_set_word(&vctp->vct_bntmp, vctp->vct_delta);
+		BN_add(&vctp->vct_bntmp2,
+		       EC_KEY_get0_private_key(vctp->vct_key),
+		       &vctp->vct_bntmp);
+		EC_KEY_set_private_key(vctp->vct_key,
+				       &vctp->vct_bntmp2);
+		EC_KEY_set_public_key(vctp->vct_key,
+				      vctp->vct_point);
 				
-				/* Rekey immediately */
-				rekey_at = 0;
-				npoints = 0;
-			}
+		output_match(vctp->vct_key, vp->vp_pattern, &vcpp->base);
 
-			output_match(pkey, vp->vp_pattern,
-				     vcpp->vcp_addrtype,
-				     vcpp->vcp_privtype);
+		vcpp->base.vc_found++;
 
-			vcpp->vcp_found++;
+		if (remove_on_match) {
+			/* Subtract the range from the difficulty */
+			vg_prefix_range_sum(vp,
+					    &vctp->vct_bntarg,
+					    &vctp->vct_bntmp,
+					    &vctp->vct_bntmp2);
+			BN_sub(&vctp->vct_bntmp,
+			       &vcpp->vcp_difficulty,
+			       &vctp->vct_bntarg);
+			BN_copy(&vcpp->vcp_difficulty, &vctp->vct_bntmp);
 
-			if (remove_on_match) {
-				/* Subtract the range from the difficulty */
-				vg_prefix_range_sum(vp, &bntarg,
-						    &bntmp, &bntmp2);
-				BN_sub(&bntmp, &vcpp->vcp_difficulty, &bntarg);
-				BN_copy(&vcpp->vcp_difficulty, &bntmp);
+			vg_prefix_delete(&vcpp->vcp_avlroot,vp);
+			vcpp->base.vc_npatterns--;
 
-				vg_prefix_delete(&vcpp->vcp_avlroot, vp);
-				vcpp->vcp_npfx--;
-				if (avl_root_empty(&vcpp->vcp_avlroot))
-					break;
-
-				vg_prefix_context_next_difficulty(vcpp, &bntmp,
-								  &bntmp2,
-								  bnctx);
-			}
+			if (!avl_root_empty(&vcpp->vcp_avlroot))
+				vg_prefix_context_next_difficulty(
+					vcpp, &vctp->vct_bntmp,
+					&vctp->vct_bntmp2,
+					vctp->vct_bnctx);
 		}
-
-		if (++c >= 20000) {			
-			output_timing(c, &tvstart,
-				      vcpp->vcp_found,
-				   remove_on_match ? vcpp->vcp_npfx_start : 0,
-				      vcpp->vcp_chance);
-			c = 0;
-		}
-
-		if (avl_root_empty(&vcpp->vcp_avlroot))
-			break;
-		pthread_mutex_unlock(&vcpp->vcp_lock);
+		res = 1;
 	}
-
+	if (avl_root_empty(&vcpp->vcp_avlroot)) {
+		pthread_mutex_unlock(&vcpp->vcp_lock);
+		return 2;
+	}
 	pthread_mutex_unlock(&vcpp->vcp_lock);
-	BN_clear_free(&bntarg);
-	BN_clear_free(&bnbase);
-	BN_clear_free(&bntmp);
-	BN_clear_free(&bntmp2);
-	BN_CTX_free(bnctx);
-	EC_KEY_free(pkey);
-	EC_POINT_free(ppnt);
-	return NULL;
+	return res;
 }
+
+vg_prefix_context_t *
+vg_prefix_context_new(int addrtype, int privtype)
+{
+	vg_prefix_context_t *vcpp;
+
+	vcpp = (vg_prefix_context_t *) malloc(sizeof(*vcpp));
+	if (vcpp) {
+		vcpp->base.vc_addrtype = addrtype;
+		vcpp->base.vc_privtype = privtype;
+		vcpp->base.vc_npatterns = 0;
+		vcpp->base.vc_npatterns_start = 0;
+		vcpp->base.vc_found = 0;
+		vcpp->base.vc_chance = 0.0;
+		vcpp->base.vc_test = vg_prefix_test;
+		avl_root_init(&vcpp->vcp_avlroot);
+		BN_init(&vcpp->vcp_difficulty);
+		pthread_mutex_init(&vcpp->vcp_lock, NULL);
+	}
+	return vcpp;
+}
+
+
 
 
 typedef struct _vg_regex_context_s {
+	vg_context_t		base;
 	pcre 			**vcr_regex;
 	pcre_extra		**vcr_regex_extra;
 	const char		**vcr_regex_pat;
-	int			vcr_addrtype;
-	int			vcr_privtype;
-	unsigned long long	vcr_found;
-	unsigned long		vcr_nres;
-	unsigned long		vcr_nres_start;
 	unsigned long		vcr_nalloc;
 	pthread_rwlock_t	vcr_lock;
 } vg_regex_context_t;
-
-vg_regex_context_t *
-vg_regex_context_new(int addrtype, int privtype)
-{
-	vg_regex_context_t *vcrp;
-
-	vcrp = (vg_regex_context_t *) malloc(sizeof(*vcrp));
-	if (vcrp) {
-		vcrp->vcr_regex = NULL;
-		vcrp->vcr_found = 0;
-		vcrp->vcr_nalloc = 0;
-		vcrp->vcr_nres = 0;
-		vcrp->vcr_nres_start = 0;
-		vcrp->vcr_addrtype = addrtype;
-		vcrp->vcr_privtype = privtype;
-		pthread_rwlock_init(&vcrp->vcr_lock, NULL);
-	}
-	return vcrp;
-}
 
 int
 vg_regex_context_add_patterns(vg_regex_context_t *vcrp,
@@ -1670,8 +1741,8 @@ vg_regex_context_add_patterns(vg_regex_context_t *vcrp,
 	if (!npatterns)
 		return 1;
 
-	if (npatterns > (vcrp->vcr_nalloc - vcrp->vcr_nres)) {
-		count = npatterns + vcrp->vcr_nres;
+	if (npatterns > (vcrp->vcr_nalloc - vcrp->base.vc_npatterns)) {
+		count = npatterns + vcrp->base.vc_npatterns;
 		if (count < (2 * vcrp->vcr_nalloc)) {
 			count = (2 * vcrp->vcr_nalloc);
 		}
@@ -1682,7 +1753,7 @@ vg_regex_context_add_patterns(vg_regex_context_t *vcrp,
 		if (!mem)
 			return 0;
 
-		for (i = 0; i < vcrp->vcr_nres; i++) {
+		for (i = 0; i < vcrp->base.vc_npatterns; i++) {
 			mem[i] = vcrp->vcr_regex[i];
 			mem[count + i] = vcrp->vcr_regex_extra[i];
 			mem[(2 * count) + i] = (void *) vcrp->vcr_regex_pat[i];
@@ -1696,7 +1767,7 @@ vg_regex_context_add_patterns(vg_regex_context_t *vcrp,
 		vcrp->vcr_nalloc = count;
 	}
 
-	nres = vcrp->vcr_nres;
+	nres = vcrp->base.vc_npatterns;
 	for (i = 0; i < npatterns; i++) {
 		vcrp->vcr_regex[nres] =
 			pcre_compile(patterns[i], 0,
@@ -1724,11 +1795,11 @@ vg_regex_context_add_patterns(vg_regex_context_t *vcrp,
 		nres += 1;
 	}
 
-	if (nres == vcrp->vcr_nres)
+	if (nres == vcrp->base.vc_npatterns)
 		return 0;
 
-	vcrp->vcr_nres_start += (nres - vcrp->vcr_nres);
-	vcrp->vcr_nres = nres;
+	vcrp->base.vc_npatterns_start += (nres - vcrp->base.vc_npatterns);
+	vcrp->base.vc_npatterns = nres;
 	return 1;
 }
 
@@ -1736,7 +1807,7 @@ void
 vg_regex_context_free(vg_regex_context_t *vcrp)
 {
 	int i;
-	for (i = 0; i < vcrp->vcr_nres; i++) {
+	for (i = 0; i < vcrp->base.vc_npatterns; i++) {
 		if (vcrp->vcr_regex_extra[i])
 			pcre_free(vcrp->vcr_regex_extra[i]);
 		pcre_free(vcrp->vcr_regex[i]);
@@ -1747,225 +1818,150 @@ vg_regex_context_free(vg_regex_context_t *vcrp)
 	free(vcrp);
 }
 
-/*
- * Search for a key for which the encoded address matches a regular
- * expression.
- * Equivalent behavior to the bitcoin vanity address patch.
- */
-void *
-generate_address_regex(vg_regex_context_t *vcrp)
+int
+vg_regex_test(vg_context_t *vcp, vg_thread_context_t *vctp)
 {
-	unsigned char eckey_buf[128];
+	vg_regex_context_t *vcrp = (vg_regex_context_t *) vcp;
+
 	unsigned char hash1[32], hash2[32];
-	unsigned char binres[25] = {0,};
+	int i, zpfx, p, d, nres, re_vec[9];
 	char b58[40];
-
-	int i, c, zpfx, p, d, nres, re_vec[9];
-
-	BN_ULONG npoints, rekey_at;
-
-	BN_CTX *bnctx;
-	BIGNUM bna, bnb, bnbase, bnrem, bntmp, bntmp2;
+	BIGNUM bnrem;
 	BIGNUM *bn, *bndiv, *bnptmp;
+	int res = 0;
 
-	EC_KEY *pkey;
-	const EC_GROUP *pgroup;
-	const EC_POINT *pgen;
-	EC_POINT *ppnt = NULL;
 	pcre *re;
 
-	struct timeval tvstart;
-
-	bnctx = BN_CTX_new();
-
-	BN_init(&bna);
-	BN_init(&bnb);
-	BN_init(&bnbase);
 	BN_init(&bnrem);
-	BN_init(&bntmp);
-	BN_init(&bntmp2);
 
-	BN_set_word(&bnbase, 58);
+	/* Hash the hash and write the four byte check code */
+	SHA256(vctp->vct_binres, 21, hash1);
+	SHA256(hash1, sizeof(hash1), hash2);
+	memcpy(&vctp->vct_binres[21], hash2, 4);
 
-	pthread_rwlock_wrlock(&vcrp->vcr_lock);
+	bn = &vctp->vct_bntmp;
+	bndiv = &vctp->vct_bntmp2;
 
-	pkey = EC_KEY_new_by_curve_name(NID_secp256k1);
-	pgroup = EC_KEY_get0_group(pkey);
-	pgen = EC_GROUP_get0_generator(pgroup);
+	BN_bin2bn(vctp->vct_binres, sizeof(vctp->vct_binres), bn);
 
-	EC_KEY_precompute_mult(pkey, bnctx);
-
-	pthread_rwlock_unlock(&vcrp->vcr_lock);
-
-	npoints = 0;
-	rekey_at = 0;
-	binres[0] = vcrp->vcr_addrtype;
-	c = 0;
-	gettimeofday(&tvstart, NULL);
-
-	while (1) {
-		if (++npoints >= rekey_at) {
-			pthread_rwlock_wrlock(&vcrp->vcr_lock);
-			if (!vcrp->vcr_nres)
-				break;
-
-			/* Generate a new random private key */
-			EC_KEY_generate_key(pkey);
-			npoints = 0;
-
-			pthread_rwlock_unlock(&vcrp->vcr_lock);
-
-			/* Determine rekey interval */
-			EC_GROUP_get_order(pgroup, &bntmp, bnctx);
-			BN_sub(&bntmp2,
-			       &bntmp,
-			       EC_KEY_get0_private_key(pkey));
-			rekey_at = BN_get_word(&bntmp2);
-			if ((rekey_at == BN_MASK2) || (rekey_at > 1000000))
-				rekey_at = 1000000;
-			assert(rekey_at > 0);
-
-			if (ppnt)
-				EC_POINT_free(ppnt);
-			ppnt = EC_POINT_dup(EC_KEY_get0_public_key(pkey),
-					    pgroup);
-
-		} else {
-			/* Common case: next point */
-			EC_POINT_add(pgroup, ppnt, ppnt, pgen, bnctx);
-		}
-
-		/* Hash the public key */
-		d = EC_POINT_point2oct(pgroup, ppnt,
-				       POINT_CONVERSION_UNCOMPRESSED,
-				       eckey_buf, sizeof(eckey_buf), bnctx);
-		SHA256(eckey_buf, d, hash1);
-		RIPEMD160(hash1, sizeof(hash1), &binres[1]);
-
-		/* Hash the hash and write the four byte check code */
-		SHA256(binres, 21, hash1);
-		SHA256(hash1, sizeof(hash1), hash2);
-		memcpy(&binres[21], hash2, 4);
-
-		bn = &bna;
-		bndiv = &bnb;
-
-		BN_bin2bn(binres, sizeof(binres), bn);
-
-		/* Compute the complete encoded address */
-		for (zpfx = 0; zpfx < 25 && binres[zpfx] == 0; zpfx++);
-		p = sizeof(b58) - 1;
-		b58[p] = '\0';
-		while (!BN_is_zero(bn)) {
-			BN_div(bndiv, &bnrem, bn, &bnbase, bnctx);
-			bnptmp = bn;
-			bn = bndiv;
-			bndiv = bnptmp;
-			d = BN_get_word(&bnrem);
-			b58[--p] = b58_alphabet[d];
-		}
-		while (zpfx--) {
-			b58[--p] = b58_alphabet[0];
-		}
-
-		/*
-		 * Run the regular expressions on it
-		 * SLOW, runs in linear time with the number of REs
-		 */
-		pthread_rwlock_rdlock(&vcrp->vcr_lock);
-		nres = vcrp->vcr_nres;
-		if (!nres)
-			break;
-		for (i = 0; i < nres; i++) {
-			d = pcre_exec(vcrp->vcr_regex[i],
-				      vcrp->vcr_regex_extra[i],
-				      &b58[p], (sizeof(b58) - 1) - p, 0,
-				      0,
-				      re_vec, sizeof(re_vec)/sizeof(re_vec[0]));
-
-			if (d <= 0) {
-				if (d != PCRE_ERROR_NOMATCH) {
-					printf("PCRE error: %d\n", d);
-					goto out;
-				}
-				continue;
-			}
-
-
-			re = vcrp->vcr_regex[i];
-			pthread_rwlock_unlock(&vcrp->vcr_lock);
-			pthread_rwlock_wrlock(&vcrp->vcr_lock);
-			nres = vcrp->vcr_nres;
-			if ((i >= nres) || (vcrp->vcr_regex[i] != re)) {
-				/* Redo the search */
-				i = -1;
-				pthread_rwlock_unlock(&vcrp->vcr_lock);
-				pthread_rwlock_rdlock(&vcrp->vcr_lock);
-				nres = vcrp->vcr_nres;
-				if (!nres)
-					goto out;
-				continue;
-			}
-
-			if (npoints) {
-				BN_clear(&bntmp);
-				BN_set_word(&bntmp, npoints);
-				BN_add(&bntmp2,
-				       EC_KEY_get0_private_key(pkey),
-				       &bntmp);
-				EC_KEY_set_private_key(pkey, &bntmp2);
-				EC_KEY_set_public_key(pkey, ppnt);
-
-				/* Rekey immediately */
-				rekey_at = 0;
-				npoints = 0;
-			}
-
-			output_match(pkey, vcrp->vcr_regex_pat[i],
-				     vcrp->vcr_addrtype, vcrp->vcr_privtype);
-
-			vcrp->vcr_found++;
-
-			if (remove_on_match) {
-				pcre_free(vcrp->vcr_regex[i]);
-				if (vcrp->vcr_regex_extra[i])
-					pcre_free(vcrp->vcr_regex_extra[i]);
-				nres -= 1;
-				vcrp->vcr_nres = nres;
-				if (!nres)
-					goto out;
-				vcrp->vcr_regex[i] = vcrp->vcr_regex[nres];
-				vcrp->vcr_regex_extra[i] =
-					vcrp->vcr_regex_extra[nres];
-				vcrp->vcr_regex_pat[i] =
-					vcrp->vcr_regex_pat[nres];
-				vcrp->vcr_nres = nres;
-			}
-		}
-
-		if (++c >= 10000) {
-			output_timing(c, &tvstart,
-				      vcrp->vcr_found,
-				    remove_on_match ? vcrp->vcr_nres_start : 0,
-				      0.0);
-			c = 0;
-		}
-
-		pthread_rwlock_unlock(&vcrp->vcr_lock);
+	/* Compute the complete encoded address */
+	for (zpfx = 0; zpfx < 25 && vctp->vct_binres[zpfx] == 0; zpfx++);
+	p = sizeof(b58) - 1;
+	b58[p] = '\0';
+	while (!BN_is_zero(bn)) {
+		BN_div(bndiv, &bnrem, bn, &vctp->vct_bnbase, vctp->vct_bnctx);
+		bnptmp = bn;
+		bn = bndiv;
+		bndiv = bnptmp;
+		d = BN_get_word(&bnrem);
+		b58[--p] = b58_alphabet[d];
+	}
+	while (zpfx--) {
+		b58[--p] = b58_alphabet[0];
 	}
 
+	/*
+	 * Run the regular expressions on it
+	 * SLOW, runs in linear time with the number of REs
+	 */
+	pthread_rwlock_rdlock(&vcrp->vcr_lock);
+	nres = vcrp->base.vc_npatterns;
+	if (!nres) {
+		res = 2;
+		goto out;
+	}
+	for (i = 0; i < nres; i++) {
+		d = pcre_exec(vcrp->vcr_regex[i],
+			      vcrp->vcr_regex_extra[i],
+			      &b58[p], (sizeof(b58) - 1) - p, 0,
+			      0,
+			      re_vec, sizeof(re_vec)/sizeof(re_vec[0]));
+
+		if (d <= 0) {
+			if (d != PCRE_ERROR_NOMATCH) {
+				printf("PCRE error: %d\n", d);
+				res = 2;
+				goto out;
+			}
+			continue;
+		}
+
+		re = vcrp->vcr_regex[i];
+		pthread_rwlock_unlock(&vcrp->vcr_lock);
+		pthread_rwlock_wrlock(&vcrp->vcr_lock);
+		nres = vcrp->base.vc_npatterns;
+		if ((i >= nres) || (vcrp->vcr_regex[i] != re)) {
+			/* Redo the search */
+			i = -1;
+			pthread_rwlock_unlock(&vcrp->vcr_lock);
+			pthread_rwlock_rdlock(&vcrp->vcr_lock);
+			nres = vcrp->base.vc_npatterns;
+			if (!nres) {
+				res = 2;
+				goto out;
+			}
+			continue;
+		}
+
+		BN_clear(&vctp->vct_bntmp);
+		BN_set_word(&vctp->vct_bntmp, vctp->vct_delta);
+		BN_add(&vctp->vct_bntmp2,
+		       EC_KEY_get0_private_key(vctp->vct_key),
+		       &vctp->vct_bntmp);
+		EC_KEY_set_private_key(vctp->vct_key,
+				       &vctp->vct_bntmp2);
+		EC_KEY_set_public_key(vctp->vct_key,
+				      vctp->vct_point);
+				
+		output_match(vctp->vct_key,
+			     vcrp->vcr_regex_pat[i],
+			     &vcrp->base);
+		vcrp->base.vc_found++;
+
+		if (remove_on_match) {
+			pcre_free(vcrp->vcr_regex[i]);
+			if (vcrp->vcr_regex_extra[i])
+				pcre_free(vcrp->vcr_regex_extra[i]);
+			nres -= 1;
+			vcrp->base.vc_npatterns = nres;
+			if (!nres) {
+				res = 2;
+				goto out;
+			}
+			vcrp->vcr_regex[i] = vcrp->vcr_regex[nres];
+			vcrp->vcr_regex_extra[i] =
+				vcrp->vcr_regex_extra[nres];
+			vcrp->vcr_regex_pat[i] = vcrp->vcr_regex_pat[nres];
+			vcrp->base.vc_npatterns = nres;
+		}
+		res = 1;
+	}
 out:
 	pthread_rwlock_unlock(&vcrp->vcr_lock);
-	BN_clear_free(&bna);
-	BN_clear_free(&bnb);
-	BN_clear_free(&bnbase);
 	BN_clear_free(&bnrem);
-	BN_clear_free(&bntmp);
-	BN_clear_free(&bntmp2);
-	BN_CTX_free(bnctx);
-	EC_KEY_free(pkey);
-	EC_POINT_free(ppnt);
-	return NULL;
+	return res;
+}
+
+
+vg_regex_context_t *
+vg_regex_context_new(int addrtype, int privtype)
+{
+	vg_regex_context_t *vcrp;
+
+	vcrp = (vg_regex_context_t *) malloc(sizeof(*vcrp));
+	if (vcrp) {
+		vcrp->base.vc_addrtype = addrtype;
+		vcrp->base.vc_privtype = privtype;
+		vcrp->base.vc_npatterns = 0;
+		vcrp->base.vc_npatterns_start = 0;
+		vcrp->base.vc_found = 0;
+		vcrp->base.vc_chance = 0.0;
+		vcrp->base.vc_test = vg_regex_test;
+		vcrp->vcr_regex = NULL;
+		vcrp->vcr_nalloc = 0;
+		pthread_rwlock_init(&vcrp->vcr_lock, NULL);
+	}
+	return vcrp;
 }
 
 
@@ -2126,7 +2122,6 @@ main(int argc, char **argv)
 	char **patterns;
 	int npatterns = 0;
 	int nthreads = 0;
-	void *(*thread_func)(void *) = NULL;
 	void *thread_arg = NULL;
 
 	while ((opt = getopt(argc, argv, "vqrikNTt:h?f:o:")) != -1) {
@@ -2215,10 +2210,9 @@ main(int argc, char **argv)
 		vcrp = vg_regex_context_new(addrtype, privtype);
 		if (!vg_regex_context_add_patterns(vcrp, patterns, npatterns))
 			return 1;
-		if ((verbose > 0) && (vcrp->vcr_nres > 1))
-			printf("Regular expressions: %ld\n", vcrp->vcr_nres);
-
-		thread_func = (void *(*)(void*)) generate_address_regex;
+		if ((verbose > 0) && (vcrp->base.vc_npatterns > 1))
+			printf("Regular expressions: %ld\n",
+			       vcrp->base.vc_npatterns);
 		thread_arg = vcrp;
 
 	} else {
@@ -2227,12 +2221,11 @@ main(int argc, char **argv)
 		if (!vg_prefix_context_add_patterns(vcpp, patterns, npatterns,
 						    caseinsensitive))
 			return 1;
-
-		thread_func = (void *(*)(void*)) generate_address_prefix;
 		thread_arg = vcpp;
 	}
 
-	if (!start_threads(thread_func, thread_arg, nthreads))
+	if (!start_threads((void *(*)(void*))vg_thread_loop,
+			   thread_arg, nthreads))
 		return 1;
 	return 0;
 }
