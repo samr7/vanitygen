@@ -2274,7 +2274,7 @@ void
 usage(const char *name)
 {
 	printf(
-"Vanitygen %s\n"
+"Vanitygen %s (" OPENSSL_VERSION_TEXT ")\n"
 "Usage: %s [-vqrikNT] [-t <threads>] [-f <filename>|-] [<pattern>...]\n"
 "Generates a bitcoin receiving address matching <pattern>, and outputs the\n"
 "address and associated private key.  The private key may be stored in a safe\n"
@@ -2380,6 +2380,14 @@ main(int argc, char **argv)
 			return 1;
 		}
 	}
+
+#if OPENSSL_VERSION_NUMBER < 0x10000000L
+	/* Complain about older versions of OpenSSL */
+	if (verbose > 0) {
+		printf("WARNING: Built with " OPENSSL_VERSION_TEXT "\n"
+		       "WARNING: Use OpenSSL 1.0.0d+ for best performance\n");
+	}
+#endif
 
 	if (caseinsensitive && regex)
 		printf("WARNING: case insensitive mode incompatible with "
