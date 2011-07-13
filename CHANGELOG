@@ -48,3 +48,8 @@ Version 0.10, released July 12 2011:
 Version 0.11, released July 12 2011:
 	- Add new thread synchronization lock
 	- Add seed file option for RNG
+
+Version 0.12, released July 13 2011:
+	- Fix the seed file option (thanks Shevek)
+	- Tweak EC_POINT batch to add affine points (+~10% key rate)
+	- Improve display status line

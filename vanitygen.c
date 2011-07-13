@@ -42,7 +42,7 @@
 #include "winglue.c"
 #endif
 
-const char *version = "0.11";
+const char *version = "0.12";
 const int debug = 0;
 int verbose = 1;
 int remove_on_match = 1;
@@ -206,7 +206,7 @@ typedef struct _timing_info_s {
 	unsigned long		ti_last_rate;
 } timing_info_t;
 
-void
+int
 output_timing(int cycle, struct timeval *last, vg_context_t *vcp)
 {
 	static unsigned long long total = 0, prevfound = 0, sincelast = 0;
@@ -259,12 +259,24 @@ output_timing(int cycle, struct timeval *last, vg_context_t *vcp)
 
 	if (mytip != timing_head) {
 		pthread_mutex_unlock(&mutex);
-		return;
+		return myrate;
 	}
 	pthread_mutex_unlock(&mutex);
 
+	targ = rate;
+	unit = "key/s";
+	if (targ > 1000) {
+		unit = "Kkey/s";
+		targ /= 1000.0;
+		if (targ > 1000) {
+			unit = "Mkey/s";
+			targ /= 1000.0;
+		}
+	}
+
 	rem = sizeof(linebuf);
-	p = snprintf(linebuf, rem, "[%lld K/s][total %lld]", rate, total);
+	p = snprintf(linebuf, rem, "[%.2f %s][total %lld]",
+		     targ, unit, total);
 	assert(p > 0);
 	rem -= p;
 	if (rem < 0)
@@ -346,6 +358,7 @@ output_timing(int cycle, struct timeval *last, vg_context_t *vcp)
 	}
 	printf("\r%s", linebuf);
 	fflush(stdout);
+	return myrate;
 }
 
 void
@@ -553,6 +566,21 @@ vg_thread_yield(vg_thread_context_t *vctp)
 }
 
 
+void
+vg_thread_consolidate_key(vg_thread_context_t *vctp)
+{
+	if (vctp->vct_delta) {
+		BN_clear(&vctp->vct_bntmp);
+		BN_set_word(&vctp->vct_bntmp, vctp->vct_delta);
+		BN_add(&vctp->vct_bntmp2,
+		       EC_KEY_get0_private_key(vctp->vct_key),
+		       &vctp->vct_bntmp);
+		EC_KEY_set_private_key(vctp->vct_key, &vctp->vct_bntmp2);
+		EC_KEY_set_public_key(vctp->vct_key, vctp->vct_point);
+		vctp->vct_delta = 0;
+	}
+}
+
 /*
  * Address search thread main loop
  */
@@ -563,7 +591,7 @@ vg_thread_loop(vg_context_t *vcp)
 	unsigned char eckey_buf[128];
 	unsigned char hash1[32];
 
-	int i, c, len;
+	int i, c, len, output_interval;
 
 	const BN_ULONG rekey_max = 10000000;
 	BN_ULONG npoints, rekey_at, nbatch;
@@ -573,6 +601,7 @@ vg_thread_loop(vg_context_t *vcp)
 	const EC_POINT *pgen;
 	const int ptarraysize = 256;
 	EC_POINT *ppnt[ptarraysize];
+	EC_POINT *pbatchinc;
 
 	vg_test_func_t test_func = vcp->vc_test;
 	vg_thread_context_t ctx;
@@ -609,6 +638,16 @@ vg_thread_loop(vg_context_t *vcp)
 			exit(1);
 		}
 	}
+	pbatchinc = EC_POINT_new(pgroup);
+	if (!pbatchinc) {
+		printf("ERROR: out of memory?\n");
+		exit(1);
+	}
+
+	BN_set_word(&ctx.vct_bntmp, ptarraysize);
+	EC_POINT_mul(pgroup, pbatchinc, &ctx.vct_bntmp, NULL, NULL,
+		     ctx.vct_bnctx);
+	EC_POINT_make_affine(pgroup, pbatchinc, ctx.vct_bnctx);
 
 	vg_thread_init_lock(&ctx);
 
@@ -619,6 +658,7 @@ vg_thread_loop(vg_context_t *vcp)
 	ctx.vct_key = pkey;
 	ctx.vct_binres[0] = vcp->vc_addrtype;
 	c = 0;
+	output_interval = 1000;
 	gettimeofday(&tvstart, NULL);
 
 	while (1) {
@@ -645,12 +685,34 @@ vg_thread_loop(vg_context_t *vcp)
 			npoints++;
 			ctx.vct_delta = 0;
 
+			for (nbatch = 1;
+			     (nbatch < ptarraysize) && (npoints < rekey_at);
+			     nbatch++, npoints++) {
+				EC_POINT_add(pgroup,
+					     ppnt[nbatch],
+					     ppnt[nbatch-1],
+					     pgen, ctx.vct_bnctx);
+			}
+
 		} else {
-			assert(nbatch > 0);
-			EC_POINT_add(pgroup,
-				     ppnt[0],
-				     ppnt[nbatch-1],
-				     pgen, ctx.vct_bnctx);
+			/*
+			 * Common case
+			 *
+			 * EC_POINT_add() can skip a few multiplies if
+			 * one or both inputs are affine (Z_is_one).
+			 * This is the case for every point in ppnt, as
+			 * well as pbatchinc.
+			 */
+			assert(nbatch == ptarraysize);
+			for (nbatch = 0;
+			     (nbatch < ptarraysize) && (npoints < rekey_at);
+			     nbatch++, npoints++) {
+				EC_POINT_add(pgroup,
+					     ppnt[nbatch],
+					     ppnt[nbatch],
+					     pbatchinc,
+					     ctx.vct_bnctx);
+			}
 		}
 
 		/*
@@ -664,23 +726,16 @@ vg_thread_loop(vg_context_t *vcp)
 		 * and feed them to EC_POINTs_make_affine() below.
 		 */
 
-		for (nbatch = 1;
-		     (nbatch < ptarraysize) && (npoints < rekey_at);
-		     nbatch++, npoints++) {
-			EC_POINT_add(pgroup,
-				     ppnt[nbatch],
-				     ppnt[nbatch-1],
-				     pgen, ctx.vct_bnctx);
-		}
-
 		EC_POINTs_make_affine(pgroup, nbatch, ppnt, ctx.vct_bnctx);
 
 		for (i = 0; i < nbatch; i++, ctx.vct_delta++) {
 			/* Hash the public key */
 			len = EC_POINT_point2oct(pgroup, ppnt[i],
 						 POINT_CONVERSION_UNCOMPRESSED,
-						 eckey_buf, sizeof(eckey_buf),
+						 eckey_buf,
+						 sizeof(eckey_buf),
 						 ctx.vct_bnctx);
+
 			SHA256(eckey_buf, len, hash1);
 			RIPEMD160(hash1, sizeof(hash1), &ctx.vct_binres[1]);
 
@@ -699,8 +754,9 @@ vg_thread_loop(vg_context_t *vcp)
 			}
 		}
 
-		if ((c += nbatch) >= 50000) {
-			output_timing(c, &tvstart, vcp);
+		c += (i + 1);
+		if (c >= output_interval) {
+			output_interval = output_timing(c, &tvstart, vcp);
 			c = 0;
 		}
 
@@ -717,7 +773,10 @@ out:
 	BN_CTX_free(ctx.vct_bnctx);
 	EC_KEY_free(pkey);
 	for (i = 0; i < ptarraysize; i++)
-		EC_POINT_free(ppnt[i]);
+		if (ppnt[i])
+			EC_POINT_free(ppnt[i]);
+	if (pbatchinc)
+		EC_POINT_free(pbatchinc);
 	return NULL;
 }
 
@@ -804,8 +863,7 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 	/* Power-of-two ceiling and floor values based on leading 1s */
 	BN_clear(&bntmp);
 	BN_set_bit(&bntmp, 200 - (zero_prefix * 8));
-	BN_set_word(&bntmp2, 1);
-	BN_sub(&bnceil, &bntmp, &bntmp2);
+	BN_sub(&bnceil, &bntmp, BN_value_one());
 	BN_set_bit(&bnfloor, 192 - (zero_prefix * 8));
 
 	bnlow = BN_new();
@@ -842,8 +900,7 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 		BN_set_word(&bntmp2, b58pow - (p - zero_prefix));
 		BN_exp(&bntmp, &bnbase, &bntmp2, bnctx);
 		BN_mul(bnlow, &bntmp, &bntarg, bnctx);
-		BN_set_word(bnhigh, 1);
-		BN_sub(&bntmp2, &bntmp, bnhigh);
+		BN_sub(&bntmp2, &bntmp, BN_value_one());
 		BN_add(bnhigh, bnlow, &bntmp2);
 
 		if (b58top <= b58ceil) {
@@ -896,7 +953,7 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 
 	} else {
 		BN_copy(bnhigh, &bnceil);
-		BN_set_word(bnlow, 0);
+		BN_clear(bnlow);
 	}
 
 	/* Limit the prefix to the address type */
@@ -1819,16 +1876,7 @@ retry:
 		if (vg_thread_upgrade_lock(vctp))
 			goto retry;
 
-		BN_clear(&vctp->vct_bntmp);
-		BN_set_word(&vctp->vct_bntmp, vctp->vct_delta);
-		BN_add(&vctp->vct_bntmp2,
-		       EC_KEY_get0_private_key(vctp->vct_key),
-		       &vctp->vct_bntmp);
-		EC_KEY_set_private_key(vctp->vct_key,
-				       &vctp->vct_bntmp2);
-		EC_KEY_set_public_key(vctp->vct_key,
-				      vctp->vct_point);
-				
+		vg_thread_consolidate_key(vctp);
 		output_match(vctp->vct_key, vp->vp_pattern, &vcpp->base);
 
 		vcpp->base.vc_found++;
@@ -2055,16 +2103,7 @@ restart_loop:
 		     (vcrp->vcr_regex[i] != re)))
 			goto restart_loop;
 
-		BN_clear(&vctp->vct_bntmp);
-		BN_set_word(&vctp->vct_bntmp, vctp->vct_delta);
-		BN_add(&vctp->vct_bntmp2,
-		       EC_KEY_get0_private_key(vctp->vct_key),
-		       &vctp->vct_bntmp);
-		EC_KEY_set_private_key(vctp->vct_key,
-				       &vctp->vct_bntmp2);
-		EC_KEY_set_public_key(vctp->vct_key,
-				      vctp->vct_point);
-				
+		vg_thread_consolidate_key(vctp);
 		output_match(vctp->vct_key,
 			     vcrp->vcr_regex_pat[i],
 			     &vcrp->base);
@@ -2335,6 +2374,7 @@ main(int argc, char **argv)
 				return 1;
 			}
 			seedfile = optarg;
+			break;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -2349,7 +2389,7 @@ main(int argc, char **argv)
 		opt = -1;
 #if !defined(_WIN32)
 		{	struct stat st;
-			if (!stat(optarg, &st) &&
+			if (!stat(seedfile, &st) &&
 			    (st.st_mode & (S_IFBLK|S_IFCHR))) {
 				opt = 32;
 		} }
