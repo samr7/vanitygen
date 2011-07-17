@@ -505,6 +505,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize)
 	vg_exec_context_t *vxcp = &vocp->base;
 
 	int slot, nslots;
+	int zap_delta;
 
 	if (!vg_ocl_init(vcp, &ctx, did))
 		return NULL;
@@ -634,7 +635,7 @@ rekey:
 	}
 	EC_POINTs_make_affine(pgroup, worksize, pprow, vxcp->vxc_bnctx);
 
-	vxcp->vxc_delta = 1;
+	zap_delta = 1;
 	npoints = 1;
 	slot = 0;
 
@@ -705,6 +706,10 @@ rekey:
 			goto recheck;
 		}
 
+		if (zap_delta) {
+			vxcp->vxc_delta = 1;
+			zap_delta = 0;
+		}
 		vocp->voc_cpu_slot = slot;
 		vocp->voc_cpu_worksize = round;
 		pthread_cond_signal(&vocp->voc_wait);
