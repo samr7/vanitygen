@@ -1,10 +1,25 @@
-#include <tchar.h>
-#include <time.h>
-#include <windows.h> 
+/*
+ * Vanitygen, vanity bitcoin address generator
+ * Copyright (C) 2011 <samr7@cs.washington.edu>
+ *
+ * Vanitygen is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version. 
+ *
+ * Vanitygen is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Vanitygen.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
-#define INLINE
-#define snprintf _snprintf
-
+#include <windows.h>
+#include <stdio.h>
+#include <pthread.h> 
+#include "winglue.h"
 
 int
 count_processors(void)
@@ -64,8 +79,6 @@ count_processors(void)
 #define DELTA_EPOCH_IN_MICROSECS  11644473600000000ULL
 #endif
 
-struct timezone;
-
 int
 gettimeofday(struct timeval *tv, struct timezone *tz)
 {
@@ -104,7 +117,7 @@ timersub(struct timeval *a, struct timeval *b, struct timeval *result)
  * getopt() for Win32 -- public domain ripped from codeproject.com
  */
 
-TCHAR *optarg;
+TCHAR *optarg = NULL;
 int optind = 0;
 
 int getopt(int argc, TCHAR *argv[], TCHAR *optstring)

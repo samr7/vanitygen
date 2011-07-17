@@ -4,7 +4,7 @@ PTHREADS_DIR = C:\pthreads-w32
 PCRE_DIR = C:\pcre-7.9-src
 CFLAGS = /D_WIN32 /DPTW32_STATIC_LIB /DPCRE_STATIC /I$(OPENSSL_DIR)\include /I$(PTHREADS_DIR) /I$(PCRE_DIR)
 LIBS = $(OPENSSL_DIR)\lib\libeay32.lib $(PTHREADS_DIR)\pthread.lib $(PCRE_DIR)\pcre.lib ws2_32.lib
-OBJS = vanitygen.obj
+OBJS = vanitygen.obj pattern.obj winglue.obj
 
 all: vanitygen.exe
 
@@ -15,5 +15,4 @@ vanitygen.exe: $(OBJS)
 	$(CC) $(CFLAGS) /c /Tp$< /Fo$@
 
 clean:
-	del vanitygen.exe
-	del vanitygen.obj
+	del vanitygen.exe $(OBJS)
