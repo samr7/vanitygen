@@ -489,7 +489,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize)
 	int i;
 	int batchsize, round;
 
-	const BN_ULONG rekey_max = 20000000;
+	const BN_ULONG rekey_max = 100000000;
 	BN_ULONG npoints, rekey_at;
 
 	EC_KEY *pkey = NULL;
@@ -523,7 +523,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize)
 	batchsize = 256;
 	if (!worksize)
 		worksize = 512;
-	nslots = 1;
+	nslots = 2;
 	slot = 0;
 
 	ppbase = (EC_POINT **) malloc((batchsize + worksize) *
