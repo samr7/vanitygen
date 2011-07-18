@@ -42,16 +42,17 @@ typedef struct _vg_ocl_context_s {
 	cl_context			voc_oclctx;
 	cl_command_queue		voc_oclcmdq;
 	cl_program			voc_oclprog;
-	cl_kernel			voc_oclkernel[MAX_SLOT];
+	cl_kernel			voc_oclkernel[MAX_SLOT][3];
 	cl_event			voc_oclkrnwait[MAX_SLOT];
 	cl_mem				voc_args[MAX_SLOT][6];
 	size_t				voc_arg_size[MAX_SLOT][6];
 
-	pthread_t			voc_cpu_thread;
+	pthread_t			voc_ocl_thread;
 	pthread_mutex_t			voc_lock;
 	pthread_cond_t			voc_wait;
-	int				voc_cpu_slot;
-	int				voc_cpu_worksize;
+	int				voc_ocl_slot;
+	int				voc_ocl_rows;
+	int				voc_ocl_cols;
 	int				voc_halt;
 	int				voc_rekey;
 } vg_ocl_context_t;
@@ -75,17 +76,38 @@ vg_exec_upgrade_lock(vg_exec_context_t *vxcp)
  */
 
 int
+vg_ocl_create_kernel(vg_ocl_context_t *vocp, int knum, const char *func)
+{
+	int i;
+	cl_kernel krn;
+	cl_int ret;
+
+	for (i = 0; i < MAX_SLOT; i++) {
+		krn = clCreateKernel(vocp->voc_oclprog, func, &ret);
+		if (!krn) {
+			printf("clCreateKernel(%d): %d\n", i, ret);
+			while (--i >= 0) {
+				clReleaseKernel(vocp->voc_oclkernel[i][knum]);
+				vocp->voc_oclkernel[i][knum] = NULL;
+			}
+			return 0;
+		}
+		vocp->voc_oclkernel[i][knum] = krn;
+		vocp->voc_oclkrnwait[i] = NULL;
+	}
+	return 1;
+}
+
+int
 vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
-		    const char *filename, const char *opts, const char *func)
+		    const char *filename, const char *opts)
 {
 	FILE *kfp;
 	char *buf;
 	int len;
 	size_t sz;
 	cl_program prog;
-	cl_kernel krn;
 	cl_int ret;
-	int i;
 
 	buf = (char *) malloc(128 * 1024);
 	if (!buf)
@@ -147,21 +169,15 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 		return 0;
 	}
 
-	for (i = 0; i < 2; i++) {
-		krn = clCreateKernel(prog, func, &ret);
-		if (!krn) {
-			clReleaseProgram(prog);
-			printf("clCreateKernel(%d): %d\n", i, ret);
-			while (--i >= 0) {
-				clReleaseKernel(vocp->voc_oclkernel[i]);
-				vocp->voc_oclkernel[i] = NULL;
-			}
-			return 0;
-		}
-		vocp->voc_oclkernel[i] = krn;
-		vocp->voc_oclkrnwait[i] = NULL;
-	}
 	vocp->voc_oclprog = prog;
+	if (!vg_ocl_create_kernel(vocp, 0, "ec_add_grid") ||
+	    !vg_ocl_create_kernel(vocp, 1, "heap_invert") ||
+	    !vg_ocl_create_kernel(vocp, 2, "hash_ec_point")) {
+		clReleaseProgram(vocp->voc_oclprog);
+		vocp->voc_oclprog = NULL;
+		return 0;
+	}
+
 	return 1;
 }
 
@@ -184,7 +200,7 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did)
 
 	pthread_mutex_init(&vocp->voc_lock, NULL);
 	pthread_cond_init(&vocp->voc_wait, NULL);
-	vocp->voc_cpu_slot = -1;
+	vocp->voc_ocl_slot = -1;
 
 	vocp->voc_ocldid = did;
 	vocp->voc_oclctx = clCreateContext(NULL,
@@ -207,24 +223,58 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did)
 
 	if (!vg_ocl_load_program(vcp, vocp,
 				 "calc_addrs.cl",
-				 NULL, //"-cl-nv-verbose",
-				 "calc_addrs")) {
+				 //"-cl-nv-verbose -cl-nv-maxrregcount=32"
+				 NULL)) {
 		printf("Could not load kernel\n");
 		return 0;
 	}
 	return 1;
 }
 
+void
+vg_ocl_del(vg_ocl_context_t *vocp)
+{
+	if (vocp->voc_oclprog) {
+		clReleaseProgram(vocp->voc_oclprog);
+		vocp->voc_oclprog = NULL;
+	}
+	if (vocp->voc_oclcmdq) {
+		clReleaseCommandQueue(vocp->voc_oclcmdq);
+		vocp->voc_oclcmdq = NULL;
+	}
+	if (vocp->voc_oclctx) {
+		clReleaseContext(vocp->voc_oclctx);
+		vocp->voc_oclctx = NULL;
+	}
+	pthread_cond_destroy(&vocp->voc_wait);
+	pthread_mutex_destroy(&vocp->voc_lock);
+	vg_exec_context_del(&vocp->base);
+}
+
 int
 vg_ocl_kernel_arg_alloc(vg_ocl_context_t *vocp, int slot,
-			int arg, size_t size)
+			int arg, size_t size, int host)
 {
 	cl_mem clbuf;
 	cl_int ret;
-	int i;
+	int i, j, knum, karg;
+
+	static int arg_map[5][8] = {
+		/* hashes_out */
+		{ 2, 0, -1 },
+		/* z_heap */
+		{ 0, 1, 1, 0, 2, 2, -1 },
+		/* point_tmp */
+		{ 0, 0, 2, 1, -1 },
+		/* row_in */
+		{ 0, 2, -1 },
+		/* col_in */
+		{ 0, 3, -1 },
+	};
 
 	clbuf = clCreateBuffer(vocp->voc_oclctx,
-			       CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR,
+			       CL_MEM_READ_WRITE |
+			       (host ? CL_MEM_ALLOC_HOST_PTR : 0),
 			       size,
 			       NULL,
 			       &ret);
@@ -233,17 +283,24 @@ vg_ocl_kernel_arg_alloc(vg_ocl_context_t *vocp, int slot,
 		return 0;
 	}
 
-	for (i = 0; i < 2; i++) {
+	for (i = 0; i < MAX_SLOT; i++) {
 		if ((i != slot) && (slot >= 0))
 			continue;
-		ret = clSetKernelArg(vocp->voc_oclkernel[i],
-				     arg,
-				     sizeof(clbuf),
-				     &clbuf);
-		if (ret) {
-			clReleaseMemObject(clbuf);
-			printf("Could not set kernel argument: %d\n", ret);
-			return 0;
+
+		for (j = 0; arg_map[arg][j] >= 0; j += 2) {
+			knum = arg_map[arg][j];
+			karg = arg_map[arg][j+1];
+			ret = clSetKernelArg(vocp->voc_oclkernel[i][knum],
+					     karg,
+					     sizeof(clbuf),
+					     &clbuf);
+			
+			if (ret) {
+				clReleaseMemObject(clbuf);
+				printf("Could not set kernel argument: %d\n",
+				       ret);
+				return 0;
+			}
 		}
 		vocp->voc_args[i][arg] = clbuf;
 		vocp->voc_arg_size[i][arg] = size;
@@ -258,7 +315,7 @@ vg_ocl_map_arg_buffer(vg_ocl_context_t *vocp, int slot,
 	void *buf;
 	cl_int ret;
 
-	assert(slot >= 0);
+	assert((slot >= 0) && (slot < MAX_SLOT));
 
 	buf = clEnqueueMapBuffer(vocp->voc_oclcmdq,
 				 vocp->voc_args[slot][arg],
@@ -282,7 +339,7 @@ vg_ocl_unmap_arg_buffer(vg_ocl_context_t *vocp, int slot,
 	cl_int ret;
 	cl_event ev;
 
-	assert(slot >= 0);
+	assert((slot >= 0) && (slot < MAX_SLOT));
 
 	ret = clEnqueueUnmapMemObject(vocp->voc_oclcmdq,
 				      vocp->voc_args[slot][arg],
@@ -308,10 +365,10 @@ vg_ocl_kernel_int_arg(vg_ocl_context_t *vocp, int slot,
 	cl_int ret;
 	int i;
 
-	for (i = 0; i < 2; i++) {
+	for (i = 0; i < MAX_SLOT; i++) {
 		if ((i != slot) && (slot >= 0))
 			continue;
-		ret = clSetKernelArg(vocp->voc_oclkernel[i],
+		ret = clSetKernelArg(vocp->voc_oclkernel[i][0],
 				     arg,
 				     sizeof(value),
 				     &value);
@@ -331,22 +388,67 @@ vg_ocl_kernel_dead(vg_ocl_context_t *vocp, int slot)
 }
 
 int
-vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int worksize)
+vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow)
 {
-	cl_int ret;
+	cl_int val, ret;
 	cl_event ev;
-	size_t globalws = worksize;
+	size_t globalws[2] = { ncol, nrow };
 
 	assert(!vocp->voc_oclkrnwait[slot]);
 
+	val = ncol;
+	ret = clSetKernelArg(vocp->voc_oclkernel[slot][1],
+			     1,
+			     sizeof(val),
+			     &val);
+	if (ret != CL_SUCCESS) {
+		printf("Could not set column count for 2nd kernel: %d\n", ret);
+		return 0;
+	}
 	ret = clEnqueueNDRangeKernel(vocp->voc_oclcmdq,
-				     vocp->voc_oclkernel[slot],
-				     1,
-				     NULL, &globalws, NULL,
+				     vocp->voc_oclkernel[slot][0],
+				     2,
+				     NULL, globalws, NULL,
 				     0, NULL,
 				     &ev);
 	if (ret != CL_SUCCESS) {
-		printf("Could not queue kernel: %d\n", ret);
+		printf("Could not queue 1st kernel: %d\n", ret);
+		return 0;
+	}
+
+	ret = clWaitForEvents(1, &ev);
+	clReleaseEvent(ev);
+	if (ret != CL_SUCCESS) {
+		printf("Error waiting for 1st kernel: %d\n", ret);
+		return 0;
+	}
+
+	ret = clEnqueueNDRangeKernel(vocp->voc_oclcmdq,
+				     vocp->voc_oclkernel[slot][1],
+				     1,
+				     NULL, &globalws[1], NULL,
+				     0, NULL,
+				     &ev);
+	if (ret != CL_SUCCESS) {
+		printf("Could not queue 2nd kernel: %d\n", ret);
+		return 0;
+	}
+
+	ret = clWaitForEvents(1, &ev);
+	clReleaseEvent(ev);
+	if (ret != CL_SUCCESS) {
+		printf("Error waiting for 2nd kernel: %d\n", ret);
+		return 0;
+	}
+
+	ret = clEnqueueNDRangeKernel(vocp->voc_oclcmdq,
+				     vocp->voc_oclkernel[slot][2],
+				     2,
+				     NULL, globalws, NULL,
+				     0, NULL,
+				     &ev);
+	if (ret != CL_SUCCESS) {
+		printf("Could not queue 3rd kernel: %d\n", ret);
 		return 0;
 	}
 
@@ -396,85 +498,47 @@ vg_ocl_put_point(unsigned char *buf, EC_POINT *ppnt)
 	memcpy(buf + 32, ppnt->Y.d, 32);
 }
 
-
 void *
-vg_opencl_cpu_thread(void *arg)
+vg_opencl_thread(void *arg)
 {
 	vg_ocl_context_t *vocp = (vg_ocl_context_t *) arg;
-	vg_exec_context_t *vxcp = &vocp->base;
-	vg_context_t *vcp = vxcp->vxc_vc;
-	unsigned char *ocl_hashes_out;
-	vg_test_func_t test_func = vcp->vc_test;
-	int i, c = 0, output_interval = 1000;
-	int rekey = 0;
 	int halt = 0;
 	int slot = -1;
-	int round;
-	struct timeval tvstart;
-
-	gettimeofday(&tvstart, NULL);
+	int rows, cols;
 
 	while (1) {
 		pthread_mutex_lock(&vocp->voc_lock);
-		if (rekey) {
-			rekey = 0;
-			vocp->voc_rekey = 1;
-		}
 		if (halt) {
 			halt = 0;
 			vocp->voc_halt = 1;
 		}
 		if (slot != -1) {
-			assert(vocp->voc_cpu_slot == slot);
-			vocp->voc_cpu_slot = -1;
+			assert(vocp->voc_ocl_slot == slot);
+			vocp->voc_ocl_slot = -1;
 			slot = -1;
 			pthread_cond_signal(&vocp->voc_wait);
 		}
 		if (vocp->voc_halt)
 			break;
-		while (vocp->voc_cpu_slot == -1) {
+		while (vocp->voc_ocl_slot == -1) {
 			pthread_cond_wait(&vocp->voc_wait, &vocp->voc_lock);
 			if (vocp->voc_halt)
-				break;
+				goto out;
 		}
 		assert(!vocp->voc_rekey);
 		assert(!vocp->voc_halt);
-		slot = vocp->voc_cpu_slot;
-		round = vocp->voc_cpu_worksize;
+		slot = vocp->voc_ocl_slot;
+		rows = vocp->voc_ocl_rows;
+		cols = vocp->voc_ocl_cols;
 		pthread_mutex_unlock(&vocp->voc_lock);
 
+		if (!vg_ocl_kernel_start(vocp, slot, cols, rows))
+			halt = 1;
 
-		ocl_hashes_out = (unsigned char *)
-			vg_ocl_map_arg_buffer(vocp, slot, 0, 0);
-
-		for (i = 0; i < round; i++, vxcp->vxc_delta++) {
-
-			memcpy(&vxcp->vxc_binres[1],
-			       ocl_hashes_out + (20*i),
-			       20);
-
-			switch (test_func(vxcp)) {
-			case 1:
-				rekey = 1;
-				i = round;
-				break;
-			case 2:
-				halt = 1;
-				i = round;
-				break;
-			default:
-				break;
-			}
-		}
-
-		vg_ocl_unmap_arg_buffer(vocp, slot, 0, ocl_hashes_out);
-
-		c += (i + 1);
-		if (c >= output_interval) {
-			output_interval = vg_output_timing(vcp, c, &tvstart);
-			c = 0;
-		}
+		if (!vg_ocl_kernel_wait(vocp, slot))
+			halt = 1;
 	}
+out:
 	pthread_mutex_unlock(&vocp->voc_lock);
 	return NULL;
 }
@@ -498,14 +562,18 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize)
 	EC_POINT **ppbase = NULL, **pprow, *pbatchinc = NULL, *poffset = NULL;
 	EC_POINT *pseek = NULL;
 
-	unsigned char *ocl_points_in, *ocl_strides_in;
+	unsigned char *ocl_points_in, *ocl_strides_in, *ocl_hashes_out;
 
 	vg_ocl_context_t ctx;
 	vg_ocl_context_t *vocp = &ctx;
 	vg_exec_context_t *vxcp = &vocp->base;
+	vg_test_func_t test_func = vcp->vc_test;
 
 	int slot, nslots;
-	int zap_delta;
+	int slot_busy = 0, slot_done = 0, halt = 0;
+	int c = 0, output_interval = 1000;
+
+	struct timeval tvstart;
 
 	if (!vg_ocl_init(vcp, &ctx, did))
 		return NULL;
@@ -563,28 +631,30 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize)
 		 * - Point and z_heap scratch spaces
 		 * - Column point array
 		 */
-		if (!vg_ocl_kernel_arg_alloc(vocp, i, 0, 20 * round) ||
-		    !vg_ocl_kernel_arg_alloc(vocp, i, 1, 32 * 2 * round) ||
-		    !vg_ocl_kernel_arg_alloc(vocp, i, 2, 32 * 2 * round) ||
-		    !vg_ocl_kernel_arg_alloc(vocp, i, 4, 32 * 2 * worksize))
+		if (!vg_ocl_kernel_arg_alloc(vocp, i, 0, 20 * round, 1) ||
+		    !vg_ocl_kernel_arg_alloc(vocp, i, 1, 32 * 2 * round, 0) ||
+		    !vg_ocl_kernel_arg_alloc(vocp, i, 2, 32 * 2 * round, 0) ||
+		    !vg_ocl_kernel_arg_alloc(vocp, i, 4, 32 * 2 * worksize, 1))
 			goto enomem;
 	}
 
 	/* Same row point array for all instances */
-	if (!vg_ocl_kernel_arg_alloc(vocp, -1, 3, 32 * 2 * batchsize))
+	if (!vg_ocl_kernel_arg_alloc(vocp, -1, 3, 32 * 2 * batchsize, 1))
 		goto enomem;
 
-	vg_ocl_kernel_int_arg(vocp, -1, 5, batchsize);
+	//vg_ocl_kernel_int_arg(vocp, -1, 5, batchsize);
 
 	npoints = 0;
 	rekey_at = 0;
 	vxcp->vxc_binres[0] = vcp->vc_addrtype;
 
-	if (pthread_create(&vocp->voc_cpu_thread, NULL,
-			   vg_opencl_cpu_thread, vocp))
+	if (pthread_create(&vocp->voc_ocl_thread, NULL,
+			   vg_opencl_thread, vocp))
 		goto enomem;
 
-rekey:
+	gettimeofday(&tvstart, NULL);
+
+l_rekey:
 	/* Generate a new random private key */
 	EC_KEY_generate_key(pkey);
 	npoints = 0;
@@ -634,15 +704,68 @@ rekey:
 			     pbatchinc, vxcp->vxc_bnctx);
 	}
 	EC_POINTs_make_affine(pgroup, worksize, pprow, vxcp->vxc_bnctx);
-
-	zap_delta = 1;
+	vxcp->vxc_delta = 1;
 	npoints = 1;
 	slot = 0;
+	slot_busy = 0;
+	slot_done = 0;
 
 	while (1) {
-		if (((npoints + round) < rekey_at) &&
-		    vg_ocl_kernel_dead(vocp, slot)) {
+		if (slot_done) {
+			slot_done = 0;
 
+			ocl_hashes_out = (unsigned char *)
+				vg_ocl_map_arg_buffer(vocp, slot, 0, 0);
+
+			for (i = 0; i < round; i++, vxcp->vxc_delta++) {
+				memcpy(&vxcp->vxc_binres[1],
+				       ocl_hashes_out + (20*i),
+				       20);
+
+				switch (test_func(vxcp)) {
+				case 1:
+					rekey_at = 0;
+					i = round;
+					break;
+				case 2:
+					halt = 1;
+					i = round;
+					break;
+				default:
+					break;
+				}
+			}
+
+			vg_ocl_unmap_arg_buffer(vocp, slot, 0, ocl_hashes_out);
+
+			c += (i + 1);
+			if (!halt && (c >= output_interval)) {
+				output_interval =
+					vg_output_timing(vcp, c, &tvstart);
+				c = 0;
+			}
+		}
+
+		if (halt) {
+			if (vcp->vc_verbose > 1)
+				printf("Halting...");
+			pthread_mutex_lock(&vocp->voc_lock);
+			vocp->voc_halt = 1;
+			pthread_cond_signal(&vocp->voc_wait);
+			while (vocp->voc_ocl_slot != -1) {
+				assert(slot_busy);
+				pthread_cond_wait(&vocp->voc_wait,
+						  &vocp->voc_lock);
+			}
+			slot_busy = 0;
+			pthread_mutex_unlock(&vocp->voc_lock);
+			pthread_join(vocp->voc_ocl_thread, NULL);
+			if (vcp->vc_verbose > 1)
+				printf("done!\n");
+			break;
+		}
+
+		if ((npoints + round) < rekey_at) {
 			if (npoints > 1) {
 				/* Move the row increments forward */
 				for (i = 0; i < worksize; i++) {
@@ -667,53 +790,46 @@ rekey:
 				vg_ocl_put_point(ocl_strides_in + (64*i),
 						 pprow[i]);
 			vg_ocl_unmap_arg_buffer(vocp, slot, 4, ocl_strides_in);
-
-			/* Kick off the kernel */
-			if (!vg_ocl_kernel_start(vocp, slot, worksize))
-				exit(1);
-
-			slot = (slot + 1) % nslots;
 			npoints += round;
-			continue;
-		}
 
-		else if (vg_ocl_kernel_dead(vocp, slot)) {
-			slot = (slot + 1) % nslots;
-			if (vg_ocl_kernel_dead(vocp, slot))
-				goto rekey;
-		}
+			pthread_mutex_lock(&vocp->voc_lock);
+			while (vocp->voc_ocl_slot != -1) {
+				assert(slot_busy);
+				pthread_cond_wait(&vocp->voc_wait,
+						  &vocp->voc_lock);
+			}
 
-		vg_ocl_kernel_wait(vocp, slot);
+			if (vocp->voc_halt) {
+				halt = 1;
+			} else {
+				vocp->voc_ocl_slot = slot;
+				vocp->voc_ocl_cols = batchsize;
+				vocp->voc_ocl_rows = worksize;
+				pthread_cond_signal(&vocp->voc_wait);
+				pthread_mutex_unlock(&vocp->voc_lock);
 
-		if (npoints >= rekey_at)
-			continue;
-
-		pthread_mutex_lock(&vocp->voc_lock);
-	recheck:
-		if (vocp->voc_halt) {
+				if (slot_busy)
+					slot_done = 1;
+				slot_busy = 1;
+				slot = (slot + 1) % nslots;
+			}
 			pthread_mutex_unlock(&vocp->voc_lock);
-			pthread_join(vocp->voc_cpu_thread, NULL);
-			goto out;
-		}
-		if (vocp->voc_rekey) {
-			vocp->voc_rekey = 0;
-			rekey_at = 0;
-			pthread_mutex_unlock(&vocp->voc_lock);
-			continue;
-		}
-		if (vocp->voc_cpu_slot != -1) {
-			pthread_cond_wait(&vocp->voc_wait, &vocp->voc_lock);
-			goto recheck;
 		}
 
-		if (zap_delta) {
-			vxcp->vxc_delta = 1;
-			zap_delta = 0;
+		else if (slot_busy) {
+			pthread_mutex_lock(&vocp->voc_lock);
+			while (vocp->voc_ocl_slot != -1) {
+				pthread_cond_wait(&vocp->voc_wait,
+						  &vocp->voc_lock);
+			}
+			slot_busy = 0;
+			pthread_mutex_unlock(&vocp->voc_lock);
+			slot_done = 1;
 		}
-		vocp->voc_cpu_slot = slot;
-		vocp->voc_cpu_worksize = round;
-		pthread_cond_signal(&vocp->voc_wait);
-		pthread_mutex_unlock(&vocp->voc_lock);
+
+		else if (!rekey_at || ((npoints + round) >= rekey_at)) {
+			goto l_rekey;
+		}
 	}
 
 	if (0) {
@@ -721,7 +837,6 @@ rekey:
 		printf("ERROR: allocation failure?\n");
 	}
 
-out:
 	if (ppbase) {
 		for (i = 0; i < (batchsize + worksize); i++)
 			if (ppbase[i])
@@ -730,6 +845,9 @@ out:
 	}
 	if (pbatchinc)
 		EC_POINT_free(pbatchinc);
+
+	vg_ocl_del(vocp);
+
 	return NULL;
 }
 

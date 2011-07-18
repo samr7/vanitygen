@@ -53,3 +53,7 @@ Version 0.12, released July 13 2011:
 	- Fix the seed file option (thanks Shevek)
 	- Tweak EC_POINT batch to add affine points (+~10% key rate)
 	- Improve display status line
+
+Version 0.13, released July 17 2011:
+	- Display hints when handling impossible prefixes
+	- Reorganize source tree

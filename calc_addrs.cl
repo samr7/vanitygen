@@ -121,10 +121,8 @@ bn_rshift(bignum *bn, int shift)
 		op[i-1] = ((ilw >> iws) | (ihw << (BN_WBITS - iws)));
 	}
 	op[i-1] = (ihw >> iws);
-	if (i < BN_NWORDS) {
-		while (i < BN_NWORDS)
-			op[i++] = 0;
-	}
+	while (i < BN_NWORDS)
+		op[i++] = 0;
 }
 
 void
@@ -172,8 +170,7 @@ bn_neg(bignum *n)
 {
 	int i, c;
 	for (i = 0, c = 1; i < BN_NWORDS; i++)
-		if ((n->d[i] = (~n->d[i]) + c) && c)
-			c = 0;
+		c = (n->d[i] = (~n->d[i]) + c) ? 0 : c;
 }
 
 /*
@@ -352,7 +349,7 @@ bn_from_mont(bignum *rb, bignum *b)
 #define WORKSIZE ((2*BN_NWORDS) + 1)
 	bn_word r[WORKSIZE];
 	bn_word m, c, p, s;
-	int i, j, top, tl;
+	int i, j, top;
 	/* Copy the input to the working area */
 	for (i = 0; i < BN_NWORDS; i++)
 		r[i] = b->d[i];
@@ -376,7 +373,6 @@ bn_from_mont(bignum *rb, bignum *b)
 		*rb = bn_zero;
 		return;
 	}
-	tl = top - BN_NWORDS;
 	c = 0;
 	for (j = 0; j < BN_NWORDS; j++)
 		bn_subb_word(rb->d[j], r[BN_NWORDS + j], modulus[j], p, c);
@@ -742,8 +738,7 @@ calc_addrs(__global uint *hashes_out,
 		if (bn_is_odd(y1))
 			cy = bn_uadd_c(&y1, &y1, modulus);
 		bn_rshift1(&y1);
-		if (cy)
-			y1.d[BN_NWORDS-1] |= 0x80000000;
+		y1.d[BN_NWORDS-1] |= (cy ? 0x80000000 : 0);
 		point_tmp[(2*i)+1] = y1;
 	}
 
@@ -857,4 +852,185 @@ calc_addrs(__global uint *hashes_out,
 			*(hashes_out++) = hash1[o];
 	}
 
+}
+
+__kernel void
+ec_add_grid(__global bignum *points_out, __global bignum *z_heap, 
+	    __global bignum *row_in, __global bignum *col_in)
+{
+	bignum rx, ry;
+	bignum x1, y1, a, b, c, d, e, z;
+	bn_word cy;
+	int i, o, colinc;
+
+	/* Load the row increment point */
+	o = get_global_id(1);
+	colinc = 2 * o * get_global_size(0);
+	rx = col_in[2*o];
+	ry = col_in[(2*o) + 1];
+	z_heap += colinc;
+
+	i = get_global_id(0);
+	o = get_global_size(0);
+	x1 = row_in[(2*i)];
+	y1 = row_in[(2*i) + 1];
+
+	bn_mod_sub(&z, &x1, &rx);
+	bn_mod_sub(&b, &y1, &ry);
+	bn_mod_add(&c, &x1, &rx);
+	bn_mod_add(&d, &y1, &ry);
+	bn_mul_mont(&y1, &b, &b);
+	bn_mul_mont(&x1, &z, &z);
+	bn_mul_mont(&e, &c, &x1);
+	bn_mod_sub(&y1, &y1, &e);
+	points_out[colinc + 2*i] = y1;
+	bn_mod_lshift1(&y1);
+	bn_mod_sub(&y1, &e, &y1);
+	bn_mul_mont(&y1, &y1, &b);
+	bn_mul_mont(&a, &x1, &z);
+	bn_mul_mont(&c, &d, &a);
+	bn_mod_sub(&y1, &y1, &c);
+	cy = 0;
+	if (bn_is_odd(y1))
+		cy = bn_uadd_c(&y1, &y1, modulus);
+	bn_rshift1(&y1);
+	y1.d[BN_NWORDS-1] |= (cy ? 0x80000000 : 0);
+	points_out[colinc + (2*i) + 1] = y1;
+	z_heap[(o-1) + i] = z;
+}
+
+__kernel void
+heap_invert(__global bignum *z_heap, int ncols)
+{
+	bignum a, b, c, z;
+	int i;
+
+	i = get_global_id(0);
+	z_heap += (2 * i * ncols);
+
+	/* Compute the product hierarchy in z_heap */
+	for (i = ncols - 1; i > 0; i--) {
+		a = z_heap[(i*2) - 1];
+		b = z_heap[(i*2)];
+		bn_mul_mont(&z, &a, &b);
+		z_heap[i-1] = z;
+	}
+
+	/* Invert the root, fix up 1/ZR -> R/Z */
+	bn_mod_inverse(&z, &z);
+
+	for (i = 0; i < BN_NWORDS; i++)
+		a.d[i] = mont_rr[i];
+	bn_mul_mont(&z, &z, &a);
+	bn_mul_mont(&z, &z, &a);
+	z_heap[0] = z;
+
+	for (i = 1; i < ncols; i++) {
+		a = z_heap[i - 1];
+		b = z_heap[(i*2) - 1];
+		c = z_heap[i*2];
+		bn_mul_mont(&z, &a, &c);
+		z_heap[(i*2) - 1] = z;
+		bn_mul_mont(&z, &a, &b);
+		z_heap[i*2] = z;
+	}
+}
+
+__kernel void
+hash_ec_point(__global uint *hashes_out,
+	      __global bignum *points_in, __global bignum *z_heap)
+{
+	uint hash1[16], hash2[16];
+	bn_word wh, wl;
+	bignum p, a, b;
+	int i, o;
+
+	o = get_global_size(0);
+	i = o * get_global_id(1);
+	z_heap += (i * 2);
+	points_in += (i * 2);
+	hashes_out += (i * 5);
+
+	i = get_global_id(0);
+	points_in += (i * 2);
+	hashes_out += (i * 5);
+
+	/*
+	 * Multiply the coordinates by the inverted Z values.
+	 * Stash the coordinates in the hash buffer.
+	 * SHA-2 requires big endian, and our intended hash input
+	 * is big-endian, so swapping is unnecessary, but
+	 * inserting the format byte in front causes a headache.
+	 */
+	a = z_heap[(o - 1) + i];
+	bn_mul_mont(&b, &a, &a);  /* Z^2 */
+	p = points_in[0];
+	bn_mul_mont(&p, &p, &b);  /* X / Z^2 */
+	bn_from_mont(&p, &p);
+
+	wh = 0x00000004;  /* POINT_CONVERSION_UNCOMPRESSED */
+	for (o = 0; o < BN_NWORDS; o++) {
+		wl = wh;
+		wh = p.d[(BN_NWORDS - 1) - o];
+		hash1[o] = (wl << 24) | (wh >> 8);
+	}
+
+	bn_mul_mont(&a, &a, &b);  /* Z^3 */
+	p = points_in[1];
+	bn_mul_mont(&p, &p, &a);  /* Y / Z^3 */
+	bn_from_mont(&p, &p);
+
+	for (o = 0; o < BN_NWORDS; o++) {
+		wl = wh;
+		wh = p.d[(BN_NWORDS - 1) - o];
+		hash1[BN_NWORDS + o] = (wl << 24) | (wh >> 8);
+	}
+
+	/*
+	 * Hash the first 64 bytes of the buffer
+	 */
+	sha2_256_init(hash2);
+	sha2_256_block(hash2, hash1);
+
+	/*
+	 * Hash the last byte of the buffer + SHA-2 padding
+	 */
+	hash1[0] = wh << 24 | 0x800000;
+	hash1[1] = 0;
+	hash1[2] = 0;
+	hash1[3] = 0;
+	hash1[4] = 0;
+	hash1[5] = 0;
+	hash1[6] = 0;
+	hash1[7] = 0;
+	hash1[8] = 0;
+	hash1[9] = 0;
+	hash1[10] = 0;
+	hash1[11] = 0;
+	hash1[12] = 0;
+	hash1[13] = 0;
+	hash1[14] = 0;
+	hash1[15] = 65 * 8;
+	sha2_256_block(hash2, hash1);
+
+	/*
+	 * Hash the SHA-2 result with RIPEMD160
+	 * Unfortunately, SHA-2 outputs big-endian, but
+	 * RIPEMD160 expects little-endian.  Need to swap!
+	 */
+	for (o = 0; o < 8; o++)
+		hash2[o] = bswap32(hash2[o]);
+	hash2[8] = bswap32(0x80000000);
+	hash2[9] = 0;
+	hash2[10] = 0;
+	hash2[11] = 0;
+	hash2[12] = 0;
+	hash2[13] = 0;
+	hash2[14] = 32 * 8;
+	hash2[15] = 0;
+	ripemd160_init(hash1);
+	ripemd160_block(hash1, hash2);
+
+	for (o = 0; o < 5; o++)
+		hashes_out[o] = hash1[o];
 }
