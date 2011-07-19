@@ -99,6 +99,9 @@ void
 bn_lshift1(bignum *bn)
 {
 	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = (BN_NWORDS - 1); i > 0; i--)
 		bn->d[i] = (bn->d[i] << 1) | (bn->d[i-1] >> 31);
 	bn->d[i] <<= 1;
@@ -129,6 +132,9 @@ void
 bn_rshift1(bignum *bn)
 {
 	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 0; i < (BN_NWORDS - 1); i++)
 		bn->d[i] = (bn->d[i+1] << 31) | (bn->d[i] >> 1);
 	bn->d[i] >>= 1;
@@ -143,6 +149,9 @@ int
 bn_ucmp(bignum *a, bignum *b)
 {
 	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = (BN_NWORDS - 1); i >= 0; i--) {
 		if (a->d[i] < b->d[i]) return -1;
 		if (a->d[i] > b->d[i]) return 1;
@@ -154,6 +163,9 @@ int
 bn_ucmp_c(bignum *a, __constant bn_word *b)
 {
 	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = (BN_NWORDS - 1); i >= 0; i--) {
 		if (a->d[i] < b[i]) return -1;
 		if (a->d[i] > b[i]) return 1;
@@ -169,6 +181,9 @@ void
 bn_neg(bignum *n)
 {
 	int i, c;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 0, c = 1; i < BN_NWORDS; i++)
 		c = (n->d[i] = (~n->d[i]) + c) ? 0 : c;
 }
@@ -185,7 +200,7 @@ bn_neg(bignum *n)
 
 #define bn_addc_word(r, a, b, t, c) do {			\
 		t = a + b + c;					\
-		c = (t < a) ? 1 : ((c && (t == a)) ? 1 : 0);	\
+		c = (t < a) ? 1 : ((c & (t == a)) ? 1 : 0);	\
 		r = t;						\
 	} while (0)
 
@@ -195,6 +210,9 @@ bn_uadd(bignum *r, bignum *a, bignum *b)
 	bn_word t, c = 0;
 	int i;
 	bn_add_word(r->d[0], a->d[0], b->d[0], t, c);
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 1; i < BN_NWORDS; i++)
 		bn_addc_word(r->d[i], a->d[i], b->d[i], t, c);
 	return c;
@@ -206,6 +224,9 @@ bn_uadd_c(bignum *r, bignum *a, __constant bn_word *b)
 	bn_word t, c = 0;
 	int i;
 	bn_add_word(r->d[0], a->d[0], b[0], t, c);
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 1; i < BN_NWORDS; i++)
 		bn_addc_word(r->d[i], a->d[i], b[i], t, c);
 	return c;
@@ -219,7 +240,7 @@ bn_uadd_c(bignum *r, bignum *a, __constant bn_word *b)
 
 #define bn_subb_word(r, a, b, t, c) do {		\
 		t = a - (b + c);			\
-		c = ((a < b) || (!a && c)) ? 1 : 0;	\
+		c = (a < b) ? 1 : (((!a) & c) ? 1 : 0);	\
 		r = t;					\
 	} while (0)
 
@@ -229,6 +250,9 @@ bn_usub(bignum *r, bignum *a, bignum *b)
 	bn_word t, c = 0;
 	int i;
 	bn_sub_word(r->d[0], a->d[0], b->d[0], t, c);
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 1; i < BN_NWORDS; i++)
 		bn_subb_word(r->d[i], a->d[i], b->d[i], t, c);
 	return c;
@@ -240,6 +264,9 @@ bn_usub_c(bignum *r, bignum *a, __constant bn_word *b)
 	bn_word t, c = 0;
 	int i;
 	bn_sub_word(r->d[0], a->d[0], b[0], t, c);
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 1; i < BN_NWORDS; i++)
 		bn_subb_word(r->d[i], a->d[i], b[i], t, c);
 	return c;
@@ -302,6 +329,9 @@ bn_mul_mont(bignum *r, bignum *a, bignum *b)
 	int i, j;
 
 	c = 0;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (j = 0; j < BN_NWORDS; j++)
 		bn_mul_word(t.d[j], a->d[j], b->d[0], c, p, s);
 	tea = c;
@@ -310,6 +340,9 @@ bn_mul_mont(bignum *r, bignum *a, bignum *b)
 	c = 0;
 	m = t.d[0] * mont_n0[0];
 	bn_mul_add_word(t.d[0], modulus[0], m, c, p, s);
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (j = 1; j < BN_NWORDS; j++) {
 		bn_mul_add_word(t.d[j], modulus[j], m, c, p, s);
 		t.d[j-1] = t.d[j];
@@ -319,6 +352,9 @@ bn_mul_mont(bignum *r, bignum *a, bignum *b)
 
 	for (i = 1; i < BN_NWORDS; i++) {
 		c = 0;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 		for (j = 0; j < BN_NWORDS; j++)
 			bn_mul_add_word(t.d[j], a->d[j], b->d[i], c, p, s);
 		tea += c;
@@ -327,6 +363,9 @@ bn_mul_mont(bignum *r, bignum *a, bignum *b)
 		c = 0;
 		m = t.d[0] * mont_n0[0];
 		bn_mul_add_word(t.d[0], modulus[0], m, c, p, s);
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 		for (j = 1; j < BN_NWORDS; j++) {
 			bn_mul_add_word(t.d[j], modulus[j], m, c, p, s);
 			t.d[j-1] = t.d[j];
@@ -351,15 +390,27 @@ bn_from_mont(bignum *rb, bignum *b)
 	bn_word m, c, p, s;
 	int i, j, top;
 	/* Copy the input to the working area */
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 0; i < BN_NWORDS; i++)
 		r[i] = b->d[i];
 	/* Zero the upper words */
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = BN_NWORDS; i < WORKSIZE; i++)
 		r[i] = 0;
 	/* Multiply (long) by modulus */
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 0; i < BN_NWORDS; i++) {
 		m = r[i] * mont_n0[0];
 		c = 0;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 		for (j = 0; j < BN_NWORDS; j++)
 			bn_mul_add_word(r[i+j], modulus[j], m, c, p, s);
 		r[BN_NWORDS + i] += c;
@@ -368,12 +419,18 @@ bn_from_mont(bignum *rb, bignum *b)
 				++r[BN_NWORDS + i + 2];  /* The end..? */
 		}
 	}
-	for (top = WORKSIZE - 1; (top > BN_NWORDS) && (r[top] == 0); top--);
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (top = WORKSIZE - 1; ((top > BN_NWORDS) & (r[top] == 0)); top--);
 	if (top <= BN_NWORDS) {
 		*rb = bn_zero;
 		return;
 	}
 	c = 0;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (j = 0; j < BN_NWORDS; j++)
 		bn_subb_word(rb->d[j], r[BN_NWORDS + j], modulus[j], p, c);
 	if (c) {
@@ -532,6 +589,9 @@ void
 sha2_256_init(uint *out)
 {
 	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 0; i < 8; i++)
 		out[i] = sha2_init[i];
 }
@@ -544,8 +604,14 @@ sha2_256_block(uint *out, uint *in)
 {
 	int i;
 	uint state[8], s0, s1, t1, t2;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 0; i < 8; i++)
 		state[7-i] = out[i];
+#ifdef UNROLL_MAX
+#pragma unroll 64
+#endif
 	for (i = 0; i < 64; i++) {
 		if (i >= 16) {
 			/* Advance the input window */
@@ -572,6 +638,9 @@ sha2_256_block(uint *out, uint *in)
 		sha2_stvar(state, i, 3) += t1;
 		sha2_stvar(state, i, 7) = t1 + t2;
 	}
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 0; i < 8; i++)
 		out[i] += state[7-i];
 }
@@ -646,6 +715,9 @@ void
 ripemd160_init(uint *out)
 {
 	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for(i = 0; i < 5; i++)
 		out[i] = ripemd160_iv[i];
 }
@@ -655,20 +727,38 @@ ripemd160_block(uint *out, uint *in)
 {
 	uint vals[10], t;
 	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 0; i < 5; i++)
 		vals[i] = vals[i + 5] = out[i];
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 0; i < 16; i++)
 		ripemd160_round(i, in, vals,
 				ripemd160_f0, ripemd160_f4, t);
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 16; i < 32; i++)
 		ripemd160_round(i, in, vals,
 				ripemd160_f1, ripemd160_f3, t);
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 32; i < 48; i++)
 		ripemd160_round(i, in, vals,
 				ripemd160_f2, ripemd160_f2, t);
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 48; i < 64; i++)
 		ripemd160_round(i, in, vals,
 				ripemd160_f3, ripemd160_f1, t);
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 64; i < 80; i++)
 		ripemd160_round(i, in, vals,
 				ripemd160_f4, ripemd160_f0, t);
@@ -686,6 +776,7 @@ ripemd160_block(uint *out, uint *in)
 	 (((v) << 8) & 0xff0000) | ((v) << 24))
 
 
+#if 0
 __kernel void
 calc_addrs(__global uint *hashes_out,
 	   __global bignum *z_heap, __global bignum *point_tmp,
@@ -853,6 +944,7 @@ calc_addrs(__global uint *hashes_out,
 	}
 
 }
+#endif
 
 __kernel void
 ec_add_grid(__global bignum *points_out, __global bignum *z_heap, 
@@ -969,6 +1061,9 @@ hash_ec_point(__global uint *hashes_out,
 	bn_from_mont(&p, &p);
 
 	wh = 0x00000004;  /* POINT_CONVERSION_UNCOMPRESSED */
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (o = 0; o < BN_NWORDS; o++) {
 		wl = wh;
 		wh = p.d[(BN_NWORDS - 1) - o];
@@ -980,6 +1075,9 @@ hash_ec_point(__global uint *hashes_out,
 	bn_mul_mont(&p, &p, &a);  /* Y / Z^3 */
 	bn_from_mont(&p, &p);
 
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (o = 0; o < BN_NWORDS; o++) {
 		wl = wh;
 		wh = p.d[(BN_NWORDS - 1) - o];
@@ -1018,6 +1116,9 @@ hash_ec_point(__global uint *hashes_out,
 	 * Unfortunately, SHA-2 outputs big-endian, but
 	 * RIPEMD160 expects little-endian.  Need to swap!
 	 */
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (o = 0; o < 8; o++)
 		hash2[o] = bswap32(hash2[o]);
 	hash2[8] = bswap32(0x80000000);
@@ -1031,6 +1132,9 @@ hash_ec_point(__global uint *hashes_out,
 	ripemd160_init(hash1);
 	ripemd160_block(hash1, hash2);
 
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (o = 0; o < 5; o++)
 		hashes_out[o] = hash1[o];
 }

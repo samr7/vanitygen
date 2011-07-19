@@ -223,8 +223,8 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did)
 
 	if (!vg_ocl_load_program(vcp, vocp,
 				 "calc_addrs.cl",
-				 //"-cl-nv-verbose -cl-nv-maxrregcount=32"
-				 NULL)) {
+				 //"-cl-nv-verbose -cl-nv-maxrregcount=32 "
+				 "-DUNROLL_MAX=16")) {
 		printf("Could not load kernel\n");
 		return 0;
 	}
@@ -498,13 +498,29 @@ vg_ocl_put_point(unsigned char *buf, EC_POINT *ppnt)
 	memcpy(buf + 32, ppnt->Y.d, 32);
 }
 
+void
+show_elapsed(struct timeval *tv, const char *place)
+{
+	struct timeval now, delta;
+        gettimeofday(&now, NULL);
+	timersub(&now, tv, &delta);
+	printf("%s spent %ld.%06lds\n", place, delta.tv_sec, delta.tv_usec);
+}
+
 void *
 vg_opencl_thread(void *arg)
 {
 	vg_ocl_context_t *vocp = (vg_ocl_context_t *) arg;
+	vg_context_t *vcp = vocp->base.vxc_vc;
 	int halt = 0;
 	int slot = -1;
 	int rows, cols;
+	unsigned long long idleu, busyu;
+	double pidle;
+	struct timeval tv, tvt, tvd, idle, busy;
+
+	memset(&idle, 0, sizeof(idle));
+	memset(&busy, 0, sizeof(busy));
 
 	while (1) {
 		pthread_mutex_lock(&vocp->voc_lock);
@@ -520,10 +536,17 @@ vg_opencl_thread(void *arg)
 		}
 		if (vocp->voc_halt)
 			break;
-		while (vocp->voc_ocl_slot == -1) {
-			pthread_cond_wait(&vocp->voc_wait, &vocp->voc_lock);
-			if (vocp->voc_halt)
-				goto out;
+		if (vocp->voc_ocl_slot == -1) {
+			gettimeofday(&tv, NULL);
+			while (vocp->voc_ocl_slot == -1) {
+				pthread_cond_wait(&vocp->voc_wait,
+						  &vocp->voc_lock);
+				if (vocp->voc_halt)
+					goto out;
+			}
+			gettimeofday(&tvt, NULL);
+			timersub(&tvt, &tv, &tvd);
+			timeradd(&tvd, &idle, &idle);
 		}
 		assert(!vocp->voc_rekey);
 		assert(!vocp->voc_halt);
@@ -532,11 +555,31 @@ vg_opencl_thread(void *arg)
 		cols = vocp->voc_ocl_cols;
 		pthread_mutex_unlock(&vocp->voc_lock);
 
+		gettimeofday(&tv, NULL);
 		if (!vg_ocl_kernel_start(vocp, slot, cols, rows))
 			halt = 1;
 
 		if (!vg_ocl_kernel_wait(vocp, slot))
 			halt = 1;
+		gettimeofday(&tvt, NULL);
+		timersub(&tvt, &tv, &tvd);
+		timeradd(&tvd, &busy, &busy);
+
+		if ((vcp->vc_verbose > 1) &&
+		    ((busy.tv_sec + idle.tv_sec) > 1)) {
+			idleu = (1000000 * idle.tv_sec) + idle.tv_usec;
+			busyu = (1000000 * busy.tv_sec) + busy.tv_usec;
+			pidle = ((double) idleu) / (idleu + busyu);
+
+			if (pidle > 0.05) {
+				printf("\rGPU idle: %.2f%%"
+				       "                              "
+				       "                                \n",
+				       100 * pidle);
+			}
+			memset(&idle, 0, sizeof(idle));
+			memset(&busy, 0, sizeof(busy));
+		}
 	}
 out:
 	pthread_mutex_unlock(&vocp->voc_lock);
@@ -590,7 +633,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize)
 
 	batchsize = 256;
 	if (!worksize)
-		worksize = 512;
+		worksize = 4096;
 	nslots = 2;
 	slot = 0;
 
