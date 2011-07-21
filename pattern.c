@@ -207,6 +207,27 @@ vg_exec_context_consolidate_key(vg_exec_context_t *vxcp)
 	}
 }
 
+void
+vg_exec_context_calc_address(vg_exec_context_t *vxcp)
+{
+	const EC_GROUP *pgroup;
+	unsigned char eckey_buf[96], hash1[32], hash2[20];
+	int len;
+
+	vg_exec_context_consolidate_key(vxcp);
+	pgroup = EC_KEY_get0_group(vxcp->vxc_key);
+	len = EC_POINT_point2oct(pgroup,
+				 EC_KEY_get0_public_key(vxcp->vxc_key),
+				 POINT_CONVERSION_UNCOMPRESSED,
+				 eckey_buf,
+				 sizeof(eckey_buf),
+				 vxcp->vxc_bnctx);
+	SHA256(eckey_buf, len, hash1);
+	RIPEMD160(hash1, sizeof(hash1), hash2);
+	memcpy(&vxcp->vxc_binres[1],
+	       hash2, 20);
+}
+
 
 typedef struct _timing_info_s {
 	struct _timing_info_s	*ti_next;
@@ -435,6 +456,14 @@ vg_context_add_patterns(vg_context_t *vcp,
 			char ** const patterns, int npatterns)
 {
 	return vcp->vc_add_patterns(vcp, patterns, npatterns);
+}
+
+int
+vg_context_hash160_sort(vg_context_t *vcp, void *buf)
+{
+	if (!vcp->vc_hash160_sort)
+		return 0;
+	return vcp->vc_hash160_sort(vcp, buf);
 }
 
 
@@ -1024,6 +1053,17 @@ avl_insert_fix(avl_root_t *rootp, avl_item_t *itemp)
 }
 
 static INLINE avl_item_t *
+avl_first(avl_root_t *rootp)
+{
+	avl_item_t *itemp = rootp->ar_root;
+	if (itemp) {
+		while (itemp->ai_left)
+			itemp = itemp->ai_left;
+	}
+	return itemp;
+}
+
+static INLINE avl_item_t *
 avl_next(avl_item_t *itemp)
 {
 	if (itemp->ai_right) {
@@ -1178,6 +1218,26 @@ vg_prefix_avl_insert(avl_root_t *rootp, vg_prefix_t *vpnew)
 	itemp = &vpnew->vp_item;
 	*ptrp = itemp;
 	avl_insert_fix(rootp, itemp);
+	return NULL;
+}
+
+static vg_prefix_t *
+vg_prefix_first(avl_root_t *rootp)
+{
+	avl_item_t *itemp;
+	itemp = avl_first(rootp);
+	if (itemp)
+		return avl_item_entry(itemp, vg_prefix_t, vp_item);
+	return NULL;
+}
+
+static vg_prefix_t *
+vg_prefix_next(vg_prefix_t *vp)
+{
+	avl_item_t *itemp = &vp->vp_item;
+	itemp = avl_next(itemp);
+	if (itemp)
+		return avl_item_entry(itemp, vg_prefix_t, vp_item);
 	return NULL;
 }
 
@@ -1568,6 +1628,54 @@ research:
 	return res;
 }
 
+int
+vg_prefix_hash160_sort(vg_context_t *vcp, void *buf)
+{
+	vg_prefix_context_t *vcpp = (vg_prefix_context_t *) vcp;
+	vg_prefix_t *vp;
+	unsigned char *cbuf = (unsigned char *) buf;
+	unsigned char bnbuf[25];
+	int nbytes, ncopy, nskip, npfx = 0;
+
+	/*
+	 * Walk the prefix tree in order, copy the upper and lower bound
+	 * values into the hash160 buffer.  Skip the lower four bytes
+	 * and anything above the 24th byte.
+	 */
+	for (vp = vg_prefix_first(&vcpp->vcp_avlroot);
+	     vp != NULL;
+	     vp = vg_prefix_next(vp)) {
+		npfx++;
+		if (!buf)
+			continue;
+
+		/* Low */
+		nbytes = BN_bn2bin(vp->vp_low, bnbuf);
+		ncopy = ((nbytes >= 24) ? 20 :
+			 ((nbytes > 4) ? (nbytes - 4) : 0));
+		nskip = (nbytes >= 24) ? (nbytes - 24) : 0;
+		if (ncopy < 20)
+			memset(cbuf, 0, 20 - ncopy);
+		memcpy(cbuf + (20 - ncopy),
+		       bnbuf + nskip,
+		       ncopy);
+		cbuf += 20;
+
+		/* High */
+		nbytes = BN_bn2bin(vp->vp_high, bnbuf);
+		ncopy = ((nbytes >= 24) ? 20 :
+			 ((nbytes > 4) ? (nbytes - 4) : 0));
+		nskip = (nbytes >= 24) ? (nbytes - 24) : 0;
+		if (ncopy < 20)
+			memset(cbuf, 0, 20 - ncopy);
+		memcpy(cbuf + (20 - ncopy),
+		       bnbuf + nskip,
+		       ncopy);
+		cbuf += 20;
+	}
+	return npfx;
+}
+
 vg_context_t *
 vg_prefix_context_new(int addrtype, int privtype, int caseinsensitive)
 {
@@ -1584,6 +1692,7 @@ vg_prefix_context_new(int addrtype, int privtype, int caseinsensitive)
 		vcpp->base.vc_free = vg_prefix_context_free;
 		vcpp->base.vc_add_patterns = vg_prefix_context_add_patterns;
 		vcpp->base.vc_test = vg_prefix_test;
+		vcpp->base.vc_hash160_sort = vg_prefix_hash160_sort;
 		avl_root_init(&vcpp->vcp_avlroot);
 		BN_init(&vcpp->vcp_difficulty);
 		vcpp->vcp_caseinsensitive = caseinsensitive;
@@ -1811,6 +1920,7 @@ vg_regex_context_new(int addrtype, int privtype)
 		vcrp->base.vc_free = vg_regex_context_free;
 		vcrp->base.vc_add_patterns = vg_regex_context_add_patterns;
 		vcrp->base.vc_test = vg_regex_test;
+		vcrp->base.vc_hash160_sort = NULL;
 		vcrp->vcr_regex = NULL;
 		vcrp->vcr_nalloc = 0;
 	}

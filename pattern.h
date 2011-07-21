@@ -59,6 +59,7 @@ typedef struct _vg_exec_context_s {
 extern int vg_exec_context_init(vg_context_t *vcp, vg_exec_context_t *vxcp);
 extern void vg_exec_context_del(vg_exec_context_t *vxcp);
 extern void vg_exec_context_consolidate_key(vg_exec_context_t *vxcp);
+extern void vg_exec_context_calc_address(vg_exec_context_t *vxcp);
 
 /* Implementation-specific lock/unlock/consolidate */
 extern void vg_exec_downgrade_lock(vg_exec_context_t *vxcp);
@@ -69,6 +70,7 @@ typedef void (*vg_free_func_t)(vg_context_t *);
 typedef int (*vg_add_pattern_func_t)(vg_context_t *,
 				     char ** const patterns, int npatterns);
 typedef int (*vg_test_func_t)(vg_exec_context_t *);
+typedef int (*vg_hash160_sort_func_t)(vg_context_t *vcp, void *buf);
 
 /* Application-level context, incl. parameters and global pattern store */
 struct _vg_context_s {
@@ -84,12 +86,14 @@ struct _vg_context_s {
 	vg_free_func_t		vc_free;
 	vg_add_pattern_func_t	vc_add_patterns;
 	vg_test_func_t		vc_test;
+	vg_hash160_sort_func_t	vc_hash160_sort;
 };
 
 
 extern void vg_context_free(vg_context_t *vcp);
 extern int vg_context_add_patterns(vg_context_t *vcp,
 				   char ** const patterns, int npatterns);
+extern int vg_context_hash160_sort(vg_context_t *vcp, void *buf);
 
 
 extern vg_context_t *vg_prefix_context_new(int addrtype, int privtype,

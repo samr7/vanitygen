@@ -42,6 +42,21 @@
  * substantially reduces the cost of performing modular inversion.
  */
 
+
+/* Byte-swapping and endianness */
+#define bswap32(v)					\
+	(((v) >> 24) | (((v) >> 8) & 0xff00) |		\
+	 (((v) << 8) & 0xff0000) | ((v) << 24))
+
+#if __ENDIAN_LITTLE__ != 1
+#define load_le32(v) bswap32(v)
+#define load_be32(v) (v)
+#else
+#define load_le32(v) (v)
+#define load_be32(v) bswap32(v)
+#endif
+
+
 /*
  * BIGNUM mini-library
  * This module deals with fixed-size 256-bit bignums.
@@ -439,27 +454,6 @@ bn_from_mont(bignum *rb, bignum *b)
 	}
 }
 
-
-/* Montgomery multiplication test kernel */
-__kernel void
-test_mul_mont(__global bignum *products_out, __global bignum *nums_in,
-	      int count)
-{
-	bignum x, y, tmp;
-	int i, o, p;
-	o = get_global_id(0) * count;
-	p = o * 2;
-	for (i = 0; i < count; i++) {
-		x = nums_in[p++];
-		y = nums_in[p++];
-		bn_mul_mont(&tmp, &x, &y);
-		bn_mul_mont(&tmp, &tmp, &x);
-		bn_mul_mont(&tmp, &tmp, &y);
-		bn_from_mont(&x, &tmp);
-		products_out[o++] = x;
-	}
-}
-
 /*
  * Modular inversion
  */
@@ -526,22 +520,6 @@ bn_mod_inverse(bignum *r, bignum *n)
 	return;
 }
 
-/* modular inversion test kernel */
-__kernel void
-test_mod_inverse(__global bignum *inv_out, __global bignum *nums_in,
-		 int count)
-{
-	bignum x, xp;
-	int i, o;
-	o = get_global_id(0) * count;
-	for (i = 0; i < count; i++) {
-		x = nums_in[o];
-		bn_mod_inverse(&xp, &x);
-		inv_out[o++] = xp;
-	}
-}
-
-
 /*
  * HASH FUNCTIONS
  *
@@ -597,7 +575,7 @@ sha2_256_init(uint *out)
 }
 
 /* The state variable remapping is really contorted */
-#define sha2_stvar(vals, i, v) vals[(i+(7-v)) % 8]
+#define sha2_stvar(vals, i, v) vals[(64+v-i) % 8]
 
 void
 sha2_256_block(uint *out, uint *in)
@@ -608,7 +586,7 @@ sha2_256_block(uint *out, uint *in)
 #pragma unroll UNROLL_MAX
 #endif
 	for (i = 0; i < 8; i++)
-		state[7-i] = out[i];
+		state[i] = out[i];
 #ifdef UNROLL_MAX
 #pragma unroll 64
 #endif
@@ -642,7 +620,7 @@ sha2_256_block(uint *out, uint *in)
 #pragma unroll UNROLL_MAX
 #endif
 	for (i = 0; i < 8; i++)
-		out[i] += state[7-i];
+		out[i] += state[i];
 }
 
 
@@ -687,28 +665,36 @@ __constant uchar ripemd160_rlp[] = {
 	8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
 };
 
+#define ripemd160_val(v, i, n) (v)[(80+(n)-(i)) % 5]
+#define ripemd160_valp(v, i, n) (v)[5 + ((80+(n)-(i)) % 5)]
 #define ripemd160_f0(x, y, z) (x ^ y ^ z)
 #define ripemd160_f1(x, y, z) ((x & y) | (~x & z))
 #define ripemd160_f2(x, y, z) ((x | ~y) ^ z)
 #define ripemd160_f3(x, y, z) ((x & z) | (y & ~z))
 #define ripemd160_f4(x, y, z) (x ^ (y | ~z))
-#define ripemd160_round(i, in, vals, f, fp, t) do {		\
-	t = rotate(vals[0] +					\
-		   f(vals[1], vals[2], vals[3]) +		\
-		   in[ripemd160_ws[i]] +			\
-		   ripemd160_k[i / 16],				\
-		   (uint)ripemd160_rl[i]) + vals[4];		\
-	vals[0] = vals[4]; vals[4] = vals[3];			\
-	vals[3] = rotate(vals[2], 10U); vals[2] = vals[1];	\
-	vals[1] = t;						\
-	t = rotate(vals[5] +					\
-		   fp(vals[6], vals[7], vals[8]) +		\
-		   in[ripemd160_wsp[i]] +			\
-		   ripemd160_kp[i / 16],			\
-		   (uint)ripemd160_rlp[i]) + vals[9];		\
-	vals[5] = vals[9]; vals[9] = vals[8];			\
-	vals[8] = rotate(vals[7], 10U); vals[7] = vals[6];	\
-	vals[6] = t;						\
+#define ripemd160_round(i, in, vals, f, fp, t) do {			\
+		ripemd160_val(vals, i, 0) =				\
+			rotate(ripemd160_val(vals, i, 0) +		\
+			       f(ripemd160_val(vals, i, 1),		\
+				 ripemd160_val(vals, i, 2),		\
+				 ripemd160_val(vals, i, 3)) +		\
+			       in[ripemd160_ws[i]] +			\
+			       ripemd160_k[i / 16],			\
+			       (uint)ripemd160_rl[i]) +			\
+			ripemd160_val(vals, i, 4);			\
+		ripemd160_val(vals, i, 2) =				\
+			rotate(ripemd160_val(vals, i, 2), 10U);		\
+		ripemd160_valp(vals, i, 0) =				\
+			rotate(ripemd160_valp(vals, i, 0) +		\
+			       fp(ripemd160_valp(vals, i, 1),		\
+				  ripemd160_valp(vals, i, 2),		\
+				  ripemd160_valp(vals, i, 3)) +		\
+			       in[ripemd160_wsp[i]] +			\
+			       ripemd160_kp[i / 16],			\
+			       (uint)ripemd160_rlp[i]) +		\
+			ripemd160_valp(vals, i, 4);			\
+		ripemd160_valp(vals, i, 2) =				\
+			rotate(ripemd160_valp(vals, i, 2), 10U);	\
 	} while (0)
 
 void
@@ -771,9 +757,41 @@ ripemd160_block(uint *out, uint *in)
 }
 
 
-#define bswap32(v)					\
-	(((v) >> 24) | (((v) >> 8) & 0xff00) |		\
-	 (((v) << 8) & 0xff0000) | ((v) << 24))
+#ifdef TEST_KERNELS
+/*
+ * Test kernels
+ */
+
+/* Montgomery multiplication test kernel */
+__kernel void
+test_mul_mont(__global bignum *products_out, __global bignum *nums_in)
+{
+	bignum a, b, c;
+	int o;
+	o = get_global_id(0);
+	nums_in += (2*o);
+
+	a = nums_in[0];
+	b = nums_in[1];
+	bn_mul_mont(&c, &a, &b);
+	products_out[o] = c;
+}
+
+/* modular inversion test kernel */
+__kernel void
+test_mod_inverse(__global bignum *inv_out, __global bignum *nums_in,
+		 int count)
+{
+	bignum x, xp;
+	int i, o;
+	o = get_global_id(0) * count;
+	for (i = 0; i < count; i++) {
+		x = nums_in[o];
+		bn_mod_inverse(&xp, &x);
+		inv_out[o++] = xp;
+	}
+}
+#endif  /* TEST_KERNELS */
 
 
 #if 0
@@ -1028,24 +1046,13 @@ heap_invert(__global bignum *z_heap, int ncols)
 	}
 }
 
-__kernel void
-hash_ec_point(__global uint *hashes_out,
-	      __global bignum *points_in, __global bignum *z_heap)
+void
+hash_ec_point(uint *hash_out, __global bignum *xy, __global bignum *zip)
 {
 	uint hash1[16], hash2[16];
+	bignum c, zi, zzi;
 	bn_word wh, wl;
-	bignum p, a, b;
-	int i, o;
-
-	o = get_global_size(0);
-	i = o * get_global_id(1);
-	z_heap += (i * 2);
-	points_in += (i * 2);
-	hashes_out += (i * 5);
-
-	i = get_global_id(0);
-	points_in += (i * 2);
-	hashes_out += (i * 5);
+	int i;
 
 	/*
 	 * Multiply the coordinates by the inverted Z values.
@@ -1054,34 +1061,34 @@ hash_ec_point(__global uint *hashes_out,
 	 * is big-endian, so swapping is unnecessary, but
 	 * inserting the format byte in front causes a headache.
 	 */
-	a = z_heap[(o - 1) + i];
-	bn_mul_mont(&b, &a, &a);  /* Z^2 */
-	p = points_in[0];
-	bn_mul_mont(&p, &p, &b);  /* X / Z^2 */
-	bn_from_mont(&p, &p);
+	zi = zip[0];
+	bn_mul_mont(&zzi, &zi, &zi);  /* 1 / Z^2 */
+	c = xy[0];
+	bn_mul_mont(&c, &c, &zzi);  /* X / Z^2 */
+	bn_from_mont(&c, &c);
 
 	wh = 0x00000004;  /* POINT_CONVERSION_UNCOMPRESSED */
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (o = 0; o < BN_NWORDS; o++) {
+	for (i = 0; i < BN_NWORDS; i++) {
 		wl = wh;
-		wh = p.d[(BN_NWORDS - 1) - o];
-		hash1[o] = (wl << 24) | (wh >> 8);
+		wh = c.d[(BN_NWORDS - 1) - i];
+		hash1[i] = (wl << 24) | (wh >> 8);
 	}
 
-	bn_mul_mont(&a, &a, &b);  /* Z^3 */
-	p = points_in[1];
-	bn_mul_mont(&p, &p, &a);  /* Y / Z^3 */
-	bn_from_mont(&p, &p);
+	bn_mul_mont(&zzi, &zzi, &zi);  /* 1 / Z^3 */
+	c = xy[1];
+	bn_mul_mont(&c, &c, &zzi);  /* Y / Z^3 */
+	bn_from_mont(&c, &c);
 
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (o = 0; o < BN_NWORDS; o++) {
+	for (i = 0; i < BN_NWORDS; i++) {
 		wl = wh;
-		wh = p.d[(BN_NWORDS - 1) - o];
-		hash1[BN_NWORDS + o] = (wl << 24) | (wh >> 8);
+		wh = c.d[(BN_NWORDS - 1) - i];
+		hash1[BN_NWORDS + i] = (wl << 24) | (wh >> 8);
 	}
 
 	/*
@@ -1119,8 +1126,8 @@ hash_ec_point(__global uint *hashes_out,
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (o = 0; o < 8; o++)
-		hash2[o] = bswap32(hash2[o]);
+	for (i = 0; i < 8; i++)
+		hash2[i] = bswap32(hash2[i]);
 	hash2[8] = bswap32(0x80000000);
 	hash2[9] = 0;
 	hash2[10] = 0;
@@ -1129,12 +1136,116 @@ hash_ec_point(__global uint *hashes_out,
 	hash2[13] = 0;
 	hash2[14] = 32 * 8;
 	hash2[15] = 0;
-	ripemd160_init(hash1);
-	ripemd160_block(hash1, hash2);
+	ripemd160_init(hash_out);
+	ripemd160_block(hash_out, hash2);
+}
 
+
+__kernel void
+hash_ec_point_get(__global uint *hashes_out,
+		  __global bignum *points_in, __global bignum *z_heap)
+{
+	uint hash[5];
+	int i, o;
+
+	o = get_global_size(0);
+	i = o * get_global_id(1);
+	z_heap += (i * 2);
+	points_in += (i * 2);
+	hashes_out += (i * 5);
+
+	i = get_global_id(0);
+	points_in += (i * 2);
+	hashes_out += (i * 5);
+
+	/* Complete the coordinates and hash */
+	hash_ec_point(hash, points_in, &z_heap[i + (o - 1)]);
+
+	/* Output the hash in proper byte-order */
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (o = 0; o < 5; o++)
-		hashes_out[o] = hash1[o];
+	for (i = 0; i < 5; i++)
+		hashes_out[i] = load_le32(hash[i]);
+}
+
+/*
+ * Normally this would be one function that compared two hash160s.
+ * This one compares a hash160 with an upper and lower bound in one
+ * function to work around a problem with AMD's OpenCL compiler.
+ */
+int
+hash160_ucmp_g(uint *a, __global uint *bound)
+{
+	uint gv;
+	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < 5; i++) {
+		gv = load_be32(bound[i]);
+		if (a[i] < gv) return -1;
+		if (a[i] > gv) break;
+	}
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < 5; i++) {
+		gv = load_be32(bound[5+i]);
+		if (a[i] < gv) return 0;
+		if (a[i] > gv) return 1;
+	}
+	return 0;
+}
+
+__kernel void
+hash_ec_point_search_prefix(__global uint *found,
+			    __global bignum *points_in, __global bignum *z_heap,
+			    __global uint *target_table, int ntargets)
+{
+	uint hash[5];
+	int i, high, low, p;
+
+	p = get_global_size(0);
+	i = p * get_global_id(1);
+	z_heap += (i * 2);
+	points_in += (i * 2);
+
+	i = get_global_id(0);
+	points_in += (i * 2);
+
+	/* Complete the coordinates and hash */
+	hash_ec_point(hash, points_in, &z_heap[(p - 1) + i]);
+
+	/*
+	 * Unconditionally byteswap the hash result, because:
+	 * - The byte-level convention of RIPEMD160 is little-endian
+	 * - We are comparing it in big-endian order
+	 */
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < 5; i++)
+		hash[i] = bswap32(hash[i]);
+
+	/* Binary-search the target table for the hash we just computed */
+	for (high = ntargets - 1, low = 0, i = high >> 1;
+	     high >= low;
+	     i = low + ((high - low) >> 1)) {
+		p = hash160_ucmp_g(hash, &target_table[10*i]);
+		low = (p > 0) ? (i + 1) : low;
+		high = (p < 0) ? (i - 1) : high;
+		if (p == 0) {
+			/* For debugging purposes, write the hash value */
+			found[0] = ((get_global_id(1) * get_global_size(0)) +
+				    get_global_id(0));
+			found[1] = i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+			for (p = 0; p < 5; p++)
+				found[p+2] = load_be32(hash[p]);
+			high = -1;
+		}
+	}
 }

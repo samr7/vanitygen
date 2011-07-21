@@ -29,6 +29,8 @@
 struct timezone;
 
 extern int gettimeofday(struct timeval *tv, struct timezone *tz);
+extern void timeradd(struct timeval *a, struct timeval *b,
+		     struct timeval *result);
 extern void timersub(struct timeval *a, struct timeval *b,
 		     struct timeval *result);
 
