@@ -87,6 +87,187 @@ vg_exec_upgrade_lock(vg_exec_context_t *vxcp)
 
 
 /*
+ * OpenCL debugging and support
+ */
+
+const char *
+vg_ocl_strerror(cl_int ret)
+{
+#define OCL_STATUS(st) case st: return #st;
+	switch (ret) {
+		OCL_STATUS(CL_SUCCESS);
+		OCL_STATUS(CL_DEVICE_NOT_FOUND);
+		OCL_STATUS(CL_DEVICE_NOT_AVAILABLE);
+		OCL_STATUS(CL_COMPILER_NOT_AVAILABLE);
+		OCL_STATUS(CL_MEM_OBJECT_ALLOCATION_FAILURE);
+		OCL_STATUS(CL_OUT_OF_RESOURCES);
+		OCL_STATUS(CL_OUT_OF_HOST_MEMORY);
+		OCL_STATUS(CL_PROFILING_INFO_NOT_AVAILABLE);
+		OCL_STATUS(CL_MEM_COPY_OVERLAP);
+		OCL_STATUS(CL_IMAGE_FORMAT_MISMATCH);
+		OCL_STATUS(CL_IMAGE_FORMAT_NOT_SUPPORTED);
+		OCL_STATUS(CL_BUILD_PROGRAM_FAILURE);
+		OCL_STATUS(CL_MAP_FAILURE);
+#if defined(CL_MISALIGNED_SUB_BUFFER_OFFSET)
+		OCL_STATUS(CL_MISALIGNED_SUB_BUFFER_OFFSET);
+#endif /* defined(CL_MISALIGNED_SUB_BUFFER_OFFSET) */
+#if defined(CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST)
+		OCL_STATUS(CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST);
+#endif /* defined(CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST) */
+		OCL_STATUS(CL_INVALID_VALUE);
+		OCL_STATUS(CL_INVALID_DEVICE_TYPE);
+		OCL_STATUS(CL_INVALID_PLATFORM);
+		OCL_STATUS(CL_INVALID_DEVICE);
+		OCL_STATUS(CL_INVALID_CONTEXT);
+		OCL_STATUS(CL_INVALID_QUEUE_PROPERTIES);
+		OCL_STATUS(CL_INVALID_COMMAND_QUEUE);
+		OCL_STATUS(CL_INVALID_HOST_PTR);
+		OCL_STATUS(CL_INVALID_MEM_OBJECT);
+		OCL_STATUS(CL_INVALID_IMAGE_FORMAT_DESCRIPTOR);
+		OCL_STATUS(CL_INVALID_IMAGE_SIZE);
+		OCL_STATUS(CL_INVALID_SAMPLER);
+		OCL_STATUS(CL_INVALID_BINARY);
+		OCL_STATUS(CL_INVALID_BUILD_OPTIONS);
+		OCL_STATUS(CL_INVALID_PROGRAM);
+		OCL_STATUS(CL_INVALID_PROGRAM_EXECUTABLE);
+		OCL_STATUS(CL_INVALID_KERNEL_NAME);
+		OCL_STATUS(CL_INVALID_KERNEL_DEFINITION);
+		OCL_STATUS(CL_INVALID_KERNEL);
+		OCL_STATUS(CL_INVALID_ARG_INDEX);
+		OCL_STATUS(CL_INVALID_ARG_VALUE);
+		OCL_STATUS(CL_INVALID_ARG_SIZE);
+		OCL_STATUS(CL_INVALID_KERNEL_ARGS);
+		OCL_STATUS(CL_INVALID_WORK_DIMENSION);
+		OCL_STATUS(CL_INVALID_WORK_GROUP_SIZE);
+		OCL_STATUS(CL_INVALID_WORK_ITEM_SIZE);
+		OCL_STATUS(CL_INVALID_GLOBAL_OFFSET);
+		OCL_STATUS(CL_INVALID_EVENT_WAIT_LIST);
+		OCL_STATUS(CL_INVALID_EVENT);
+		OCL_STATUS(CL_INVALID_OPERATION);
+		OCL_STATUS(CL_INVALID_GL_OBJECT);
+		OCL_STATUS(CL_INVALID_BUFFER_SIZE);
+		OCL_STATUS(CL_INVALID_MIP_LEVEL);
+		OCL_STATUS(CL_INVALID_GLOBAL_WORK_SIZE);
+#if defined(CL_INVALID_PROPERTY)
+		OCL_STATUS(CL_INVALID_PROPERTY);
+#endif /* defined(CL_INVALID_PROPERTY) */
+#undef OCL_STATUS
+	default: {
+		static char tmp[64];
+		snprintf(tmp, sizeof(tmp), "Unknown code %d", ret);
+		return tmp;
+	}
+	}
+}
+
+/* Get device strings, using a static buffer -- caveat emptor */
+const char *
+vg_ocl_device_getstr(cl_device_id did, cl_device_info param)
+{
+	static char device_str[1024];
+	cl_int ret;
+	size_t size_ret;
+	ret = clGetDeviceInfo(did, param,
+			      sizeof(device_str), device_str,
+			      &size_ret);
+	if (ret != CL_SUCCESS) {
+		snprintf(device_str, sizeof(device_str),
+			 "clGetDeviceInfo: %s",
+			 vg_ocl_strerror(ret));
+	}
+	return device_str;
+}
+
+void
+vg_ocl_dump_info(vg_ocl_context_t *vocp)
+{
+	cl_device_id did;
+	if (vocp->base.vxc_vc && (vocp->base.vxc_vc->vc_verbose < 1))
+		return;
+	did = vocp->voc_ocldid;
+	printf("Device: %s\n",
+	       vg_ocl_device_getstr(did, CL_DEVICE_NAME));
+	printf("Vendor: %s\n",
+	       vg_ocl_device_getstr(did, CL_DEVICE_VENDOR));
+	printf("Driver: %s\n",
+	       vg_ocl_device_getstr(did, CL_DRIVER_VERSION));
+	printf("Profile: %s\n",
+	       vg_ocl_device_getstr(did, CL_DEVICE_PROFILE));
+	printf("Version: %s\n",
+	       vg_ocl_device_getstr(did, CL_DEVICE_VERSION));
+}
+
+void
+vg_ocl_error(vg_ocl_context_t *vocp, int code, const char *desc)
+{
+	const char *err = vg_ocl_strerror(code);
+	if (desc) {
+		printf("%s: %s\n", desc, err);
+	} else {
+		printf("%s\n", err);
+	}
+
+	if (vocp && vocp->voc_ocldid)
+		vg_ocl_dump_info(vocp);
+}
+
+void
+vg_ocl_buildlog(vg_ocl_context_t *vocp, cl_program prog)
+{
+	size_t logbufsize, logsize;
+	char *log;
+	int off = 0;
+	cl_int ret;
+
+	ret = clGetProgramBuildInfo(prog,
+				    vocp->voc_ocldid,
+				    CL_PROGRAM_BUILD_LOG,
+				    0, NULL,
+				    &logbufsize);
+	if (ret != CL_SUCCESS) {
+		vg_ocl_error(NULL, ret, "clGetProgramBuildInfo");
+		return;
+	}
+
+	log = (char *) malloc(logbufsize);
+	if (!log) {
+		printf("Could not allocate build log buffer\n");
+		return;
+	}
+
+	ret = clGetProgramBuildInfo(prog,
+				    vocp->voc_ocldid,
+				    CL_PROGRAM_BUILD_LOG,
+				    logbufsize,
+				    log,
+				    &logsize);
+	if (ret != CL_SUCCESS) {
+		vg_ocl_error(NULL, ret, "clGetProgramBuildInfo");
+
+	} else {
+		/* Remove leading newlines and trailing newlines/whitespace */
+		log[logbufsize-1] = '\0';
+		for (off = logsize - 1; off >= 0; off--) {
+			if ((log[off] != '\r') &&
+			    (log[off] != '\n') &&
+			    (log[off] != ' ') &&
+			    (log[off] != '\t') &&
+			    (log[off] != '\0'))
+				break;
+			log[off] = '\0';
+		}
+		for (off = 0; off < logbufsize; off++) {
+			if ((log[off] != '\r') &&
+			    (log[off] != '\n'))
+				break;
+		}
+
+		printf("Build log:\n%s\n", &log[off]);
+	}
+	free(log);
+}
+
+/*
  * OpenCL per-exec functions
  */
 
@@ -100,7 +281,8 @@ vg_ocl_create_kernel(vg_ocl_context_t *vocp, int knum, const char *func)
 	for (i = 0; i < MAX_SLOT; i++) {
 		krn = clCreateKernel(vocp->voc_oclprog, func, &ret);
 		if (!krn) {
-			printf("clCreateKernel(%d): %d\n", i, ret);
+			printf("clCreateKernel(%d): ", i);
+			vg_ocl_error(vocp, ret, NULL);
 			while (--i >= 0) {
 				clReleaseKernel(vocp->voc_oclkernel[i][knum]);
 				vocp->voc_oclkernel[i][knum] = NULL;
@@ -125,8 +307,10 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 	cl_int ret;
 
 	buf = (char *) malloc(128 * 1024);
-	if (!buf)
+	if (!buf) {
+		printf("Could not allocate program buffer\n");
 		return 0;
+	}
 
 	kfp = fopen(filename, "r");
 	if (!kfp) {
@@ -144,7 +328,7 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 					 &ret);
 	free(buf);
 	if (!prog) {
-		printf("clCreateProgramWithSource: %d\n", ret);
+		vg_ocl_error(vocp, ret, "clCreateProgramWithSource");
 		return 0;
 	}
 
@@ -156,30 +340,15 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 	if (ret != CL_SUCCESS) {
 		if (vcp->vc_verbose > 0)
 			printf("failure.\n");
-		printf("clBuildProgram: %d\n", ret);
+		vg_ocl_error(NULL, ret, "clBuildProgram");
 	} else if (vcp->vc_verbose > 0) {
 		printf("done!\n");
 	}
 	if ((ret != CL_SUCCESS) || (vcp->vc_verbose > 1)) {
-		const size_t logbufsize = 1024 * 16;
-		char *log = (char*) malloc(logbufsize);
-		size_t logsize;
-		cl_int ret2;
-
-		ret2 = clGetProgramBuildInfo(prog,
-					    vocp->voc_ocldid,
-					    CL_PROGRAM_BUILD_LOG,
-					    logbufsize,
-					    log,
-					    &logsize);
-		if (ret2 != CL_SUCCESS) {
-			printf("clGetProgramBuildInfo: %d\n", ret2);
-		} else {
-			printf("Build log:%s\n", log);
-		}
-		free(log);
+		vg_ocl_buildlog(vocp, prog);
 	}
 	if (ret != CL_SUCCESS) {
+		vg_ocl_dump_info(vocp);
 		clReleaseProgram(prog);
 		return 0;
 	}
@@ -223,7 +392,7 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did)
 					   NULL,
 					   &ret);
 	if (!vocp->voc_oclctx) {
-		printf("clCreateContext failed: %d\n", ret);
+		vg_ocl_error(vocp, ret, "clCreateContext");
 		return 0;
 	}
 
@@ -231,17 +400,15 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did)
 						 vocp->voc_ocldid,
 						 0, &ret);
 	if (!vocp->voc_oclcmdq) {
-		printf("clCreateCommandQueue failed: %d\n", ret);
+		vg_ocl_error(vocp, ret, "clCreateCommandQueue");
 		return 0;
 	}
 
 	if (!vg_ocl_load_program(vcp, vocp,
 				 "calc_addrs.cl",
 				 //"-cl-nv-verbose "
-				 "-DUNROLL_MAX=16")) {
-		printf("Could not load kernel\n");
+				 "-DUNROLL_MAX=16"))
 		return 0;
-	}
 	return 1;
 }
 
@@ -305,7 +472,8 @@ vg_ocl_kernel_arg_alloc(vg_ocl_context_t *vocp, int slot,
 			       NULL,
 			       &ret);
 	if (!clbuf) {
-		printf("Could not create argument buffer: %d\n", ret);
+		printf("clCreateBuffer(%d,%d): ", slot, arg);
+		vg_ocl_error(vocp, ret, NULL);
 		return 0;
 	}
 
@@ -326,8 +494,8 @@ vg_ocl_kernel_arg_alloc(vg_ocl_context_t *vocp, int slot,
 					     &clbuf);
 			
 			if (ret) {
-				printf("Could not set kernel argument: %d\n",
-				       ret);
+				printf("clSetKernelArg(%d,%d): ", knum, karg);
+				vg_ocl_error(vocp, ret, NULL);
 				return 0;
 			}
 		}
@@ -357,7 +525,8 @@ vg_ocl_copyout_arg(vg_ocl_context_t *vocp, int wslot, int arg,
 				   NULL);
 			
 	if (ret) {
-		printf("Could not copyout argument buffer: %d\n", ret);
+		printf("clEnqueueWriteBuffer(%d): ", arg);
+		vg_ocl_error(vocp, ret, NULL);
 		return 0;
 	}
 
@@ -383,7 +552,8 @@ vg_ocl_map_arg_buffer(vg_ocl_context_t *vocp, int slot,
 				 NULL,
 				 &ret);
 	if (!buf) {
-		printf("Could not map argument buffer: %d\n", ret);
+		printf("clEnqueueMapBuffer(%d): ", arg);
+		vg_ocl_error(vocp, ret, NULL);
 		return NULL;
 	}
 	return buf;
@@ -404,14 +574,16 @@ vg_ocl_unmap_arg_buffer(vg_ocl_context_t *vocp, int slot,
 				      0, NULL,
 				      &ev);
 	if (ret != CL_SUCCESS) {
-		printf("Could not unmap buffer: %d\n", ret);
+		printf("clEnqueueUnmapMemObject(%d): ", arg);
+		vg_ocl_error(vocp, ret, NULL);
 		return;
 	}
 
 	ret = clWaitForEvents(1, &ev);
 	clReleaseEvent(ev);
 	if (ret != CL_SUCCESS) {
-		printf("Error waiting for event: %d\n", ret);
+		printf("clWaitForEvent(clUnmapMemObject,%d): ", arg);
+		vg_ocl_error(vocp, ret, NULL);
 	}
 }
 
@@ -430,8 +602,8 @@ vg_ocl_kernel_int_arg(vg_ocl_context_t *vocp, int slot,
 				     sizeof(value),
 				     &value);
 		if (ret) {
-			printf("Could not set kernel argument: %d\n",
-			       ret);
+			printf("clSetKernelArg(%d): ", arg);
+			vg_ocl_error(vocp, ret, NULL);
 			return 0;
 		}
 	}
@@ -459,7 +631,7 @@ vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow)
 			     sizeof(val),
 			     &val);
 	if (ret != CL_SUCCESS) {
-		printf("Could not set column count for 2nd kernel: %d\n", ret);
+		vg_ocl_error(vocp, ret, "clSetKernelArg(ncol)");
 		return 0;
 	}
 	ret = clEnqueueNDRangeKernel(vocp->voc_oclcmdq,
@@ -469,14 +641,14 @@ vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow)
 				     0, NULL,
 				     &ev);
 	if (ret != CL_SUCCESS) {
-		printf("Could not queue 1st kernel: %d\n", ret);
+		vg_ocl_error(vocp, ret, "clEnqueueNDRange(0)");
 		return 0;
 	}
 
 	ret = clWaitForEvents(1, &ev);
 	clReleaseEvent(ev);
 	if (ret != CL_SUCCESS) {
-		printf("Error waiting for 1st kernel: %d\n", ret);
+		vg_ocl_error(vocp, ret, "clWaitForEvents(NDRange,0)");
 		return 0;
 	}
 
@@ -487,14 +659,14 @@ vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow)
 				     0, NULL,
 				     &ev);
 	if (ret != CL_SUCCESS) {
-		printf("Could not queue 2nd kernel: %d\n", ret);
+		vg_ocl_error(vocp, ret, "clEnqueueNDRange(1)");
 		return 0;
 	}
 
 	ret = clWaitForEvents(1, &ev);
 	clReleaseEvent(ev);
 	if (ret != CL_SUCCESS) {
-		printf("Error waiting for 2nd kernel: %d\n", ret);
+		vg_ocl_error(vocp, ret, "clWaitForEvents(NDRange,1)");
 		return 0;
 	}
 
@@ -505,7 +677,7 @@ vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow)
 				     0, NULL,
 				     &ev);
 	if (ret != CL_SUCCESS) {
-		printf("Could not queue 3rd kernel: %d\n", ret);
+		vg_ocl_error(vocp, ret, "clEnqueueNDRange(2)");
 		return 0;
 	}
 
@@ -525,7 +697,7 @@ vg_ocl_kernel_wait(vg_ocl_context_t *vocp, int slot)
 		ret = clWaitForEvents(1, &ev);
 		clReleaseEvent(ev);
 		if (ret != CL_SUCCESS) {
-			printf("Error waiting for event: %d\n", ret);
+			vg_ocl_error(vocp, ret, "clWaitForEvents(NDRange,e)");
 			return 0;
 		}
 	}
@@ -1163,7 +1335,7 @@ get_device_list(cl_platform_id pid, cl_device_id **list_out)
 	cl_device_id *ids;
 	res = clGetDeviceIDs(pid, CL_DEVICE_TYPE_ALL, 0, NULL, &nd);
 	if (res != CL_SUCCESS) {
-		printf("clGetDeviceIDs(0) failed: %d\n", res);
+		vg_ocl_error(NULL, res, "clGetDeviceIDs(0)");
 		*list_out = NULL;
 		return -1;
 	}
@@ -1176,7 +1348,7 @@ get_device_list(cl_platform_id pid, cl_device_id **list_out)
 		}
 		res = clGetDeviceIDs(pid, CL_DEVICE_TYPE_ALL, nd, ids, NULL);
 		if (res != CL_SUCCESS) {
-			printf("clGetDeviceIDs(n) failed: %d\n", res);
+			vg_ocl_error(NULL, res, "clGetDeviceIDs(n)");
 			free(ids);
 			*list_out = NULL;
 			return -1;
@@ -1250,7 +1422,7 @@ get_platform_list(cl_platform_id **list_out)
 	cl_platform_id *ids;
 	res = clGetPlatformIDs(0, NULL, &np);
 	if (res != CL_SUCCESS) {
-		printf("clGetPlatformIDs(0) failed: %d\n", res);
+		vg_ocl_error(NULL, res, "clGetPlatformIDs(0)");
 		*list_out = NULL;
 		return -1;
 	}
@@ -1263,7 +1435,7 @@ get_platform_list(cl_platform_id **list_out)
 		}
 		res = clGetPlatformIDs(np, ids, NULL);
 		if (res != CL_SUCCESS) {
-			printf("clGetPlatformIDs(n) failed: %d\n", res);
+			vg_ocl_error(NULL, res, "clGetPlatformIDs(n)");
 			free(ids);
 			*list_out = NULL;
 			return -1;
@@ -1286,7 +1458,7 @@ show_platforms(cl_platform_id *ids, int np, int base)
 		res = clGetPlatformInfo(ids[i], CL_PLATFORM_NAME,
 					sizeof(nbuf), nbuf, &len);
 		if (res != CL_SUCCESS) {
-			printf("Failed to enumerate platform ID: %d\n", res);
+			vg_ocl_error(NULL, res, "clGetPlatformInfo(NAME)");
 			continue;
 		}
 		if (len >= sizeof(nbuf))
@@ -1295,7 +1467,7 @@ show_platforms(cl_platform_id *ids, int np, int base)
 		res = clGetPlatformInfo(ids[i], CL_PLATFORM_VENDOR,
 					sizeof(vbuf), vbuf, &len);
 		if (res != CL_SUCCESS) {
-			printf("Failed to enumerate platform ID: %d\n", res);
+			vg_ocl_error(NULL, res, "clGetPlatformInfo(VENDOR)");
 			continue;
 		}
 		if (len >= sizeof(vbuf))
