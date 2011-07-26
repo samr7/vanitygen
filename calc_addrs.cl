@@ -125,22 +125,21 @@ bn_lshift1(bignum *bn)
 void
 bn_rshift(bignum *bn, int shift)
 {
-	int i, wd, iws;
-	bn_word *op, *ip, ihw, ilw;
+	int i, wd, iws, iwr;
+	bn_word ihw, ilw;
 	iws = (shift & (BN_WBITS-1));
+	iwr = BN_WBITS - iws;
 	wd = (shift >> BN_WSHIFT);
-	ip = ((bn_word*)bn);
-	op = ip + wd;
-	wd = BN_NWORDS - wd;
-	ihw = ip[0];
-	for (i = 1; i < wd; i++) {
+	ihw = (wd < BN_WBITS) ? bn->d[wd] : 0;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0, wd++; i < (BN_NWORDS-1); i++, wd++) {
 		ilw = ihw;
-		ihw = ip[i];
-		op[i-1] = ((ilw >> iws) | (ihw << (BN_WBITS - iws)));
+		ihw = (wd < BN_WBITS) ? bn->d[wd] : 0;
+		bn->d[i] = (ilw >> iws) | (ihw << iwr);
 	}
-	op[i-1] = (ihw >> iws);
-	while (i < BN_NWORDS)
-		op[i++] = 0;
+	bn->d[i] = (ihw >> iws);
 }
 
 void
@@ -253,10 +252,11 @@ bn_uadd_c(bignum *r, bignum *a, __constant bn_word *b)
 		r = t;				\
 	} while (0)
 
-#define bn_subb_word(r, a, b, t, c) do {		\
-		t = a - (b + c);			\
-		c = (a < b) ? 1 : (((!a) & c) ? 1 : 0);	\
-		r = t;					\
+#define bn_subb_word(r, a, b, t, c) do {	\
+		t = a - (b + c);		\
+		c = (!(a) && c) ? 1 : 0;	\
+		c |= (a < b) ? 1 : 0;		\
+		r = t;				\
 	} while (0)
 
 bn_word
@@ -449,6 +449,9 @@ bn_from_mont(bignum *rb, bignum *b)
 	for (j = 0; j < BN_NWORDS; j++)
 		bn_subb_word(rb->d[j], r[BN_NWORDS + j], modulus[j], p, c);
 	if (c) {
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 		for (j = 0; j < BN_NWORDS; j++)
 			rb->d[j] = r[BN_NWORDS + j];
 	}
@@ -1029,6 +1032,9 @@ heap_invert(__global bignum *z_heap, int ncols)
 	/* Invert the root, fix up 1/ZR -> R/Z */
 	bn_mod_inverse(&z, &z);
 
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 0; i < BN_NWORDS; i++)
 		a.d[i] = mont_rr[i];
 	bn_mul_mont(&z, &z, &a);
