@@ -492,6 +492,7 @@ main(int argc, char **argv)
 			break;
 		case 'N':
 			addrtype = 52;
+			addrtype = 180;
 			break;
 		case 'T':
 			addrtype = 111;
