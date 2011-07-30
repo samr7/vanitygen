@@ -228,11 +228,18 @@ vg_exec_context_calc_address(vg_exec_context_t *vxcp)
 	       hash2, 20);
 }
 
+enum {
+	timing_hist_size = 5
+};
 
 typedef struct _timing_info_s {
 	struct _timing_info_s	*ti_next;
 	pthread_t		ti_thread;
 	unsigned long		ti_last_rate;
+
+	unsigned long long	ti_hist_time[timing_hist_size];
+	unsigned long		ti_hist_work[timing_hist_size];
+	int			ti_hist_last;
 } timing_info_t;
 
 int
@@ -245,7 +252,7 @@ vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last)
 	pthread_t me;
 	struct timeval tvnow, tv;
 	timing_info_t *tip, *mytip;
-	unsigned long long rate, myrate;
+	unsigned long long rate, myrate, mytime;
 	double count, prob, time, targ;
 	char linebuf[80];
 	char *unit;
@@ -257,16 +264,31 @@ vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last)
 	gettimeofday(&tvnow, NULL);
 	timersub(&tvnow, last, &tv);
 	memcpy(last, &tvnow, sizeof(*last));
-	myrate = tv.tv_usec + (1000000 * tv.tv_sec);
-	myrate = (1000000ULL * cycle) / myrate;
+	mytime = tv.tv_usec + (1000000ULL * tv.tv_sec);
+	if (!mytime)
+		mytime = 1;
+	rate = 0;
 
 	pthread_mutex_lock(&mutex);
 	me = pthread_self();
-	rate = myrate;
 	for (tip = timing_head, mytip = NULL; tip != NULL; tip = tip->ti_next) {
 		if (pthread_equal(tip->ti_thread, me)) {
 			mytip = tip;
+			p = ((tip->ti_hist_last + 1) % timing_hist_size);
+			tip->ti_hist_time[p] = mytime;
+			tip->ti_hist_work[p] = cycle;
+			tip->ti_hist_last = p;
+
+			mytime = 0;
+			myrate = 0;
+			for (i = 0; i < timing_hist_size; i++) {
+				mytime += tip->ti_hist_time[i];
+				myrate += tip->ti_hist_work[i];
+			}
+			myrate = (myrate * 1000000) / mytime;
 			tip->ti_last_rate = myrate;
+			rate += myrate;
+
 		} else
 			rate += tip->ti_last_rate;
 	}
@@ -275,7 +297,16 @@ vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last)
 		mytip->ti_next = timing_head;
 		mytip->ti_thread = me;
 		timing_head = mytip;
+		mytip->ti_hist_last = 0;
+		mytip->ti_hist_time[0] = mytime;
+		mytip->ti_hist_work[0] = cycle;
+		for (i = 1; i < timing_hist_size; i++) {
+			mytip->ti_hist_time[i] = 1;
+			mytip->ti_hist_work[i] = 0;
+		}
+		myrate = ((unsigned long long)cycle * 1000000) / mytime;
 		mytip->ti_last_rate = myrate;
+		rate += myrate;
 	}
 
 	total += cycle;
