@@ -39,6 +39,8 @@ const int debug = 0;
 #define MAX_ARG 6
 #define MAX_KERNEL 3
 
+#define round_up_pow2(x, a) (((x) + ((a)-1)) & ~((a)-1))
+
 /* OpenCL address searching mode */
 struct _vg_ocl_context_s;
 typedef int (*vg_ocl_init_t)(struct _vg_ocl_context_s *);
@@ -1112,8 +1114,10 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize)
 	 * - The z_heap and point scratch spaces
 	 * - The row point array
 	 */
-	if (!vg_ocl_kernel_arg_alloc(vocp, -1, 1, 32 * 2 * round, 0) ||
-	    !vg_ocl_kernel_arg_alloc(vocp, -1, 2, 32 * 2 * round, 0) ||
+	if (!vg_ocl_kernel_arg_alloc(vocp, -1, 1,
+			     round_up_pow2(32 * 2 * round, 4096), 0) ||
+	    !vg_ocl_kernel_arg_alloc(vocp, -1, 2,
+			     round_up_pow2(32 * 2 * round, 4096), 0) ||
 	    !vg_ocl_kernel_arg_alloc(vocp, -1, 3, 32 * 2 * batchsize, 1))
 		goto enomem;
 

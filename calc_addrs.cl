@@ -971,7 +971,7 @@ calc_addrs(__global uint *hashes_out,
 #define ACCESS_STRIDE (ACCESS_BUNDLE/BN_NWORDS)
 
 __kernel void
-ec_add_grid(__global bn_word *points_out, __global bignum *z_heap, 
+ec_add_grid(__global bn_word *points_out, __global bn_word *z_heap, 
 	    __global bignum *row_in, __global bignum *col_in)
 {
 	bignum rx, ry;
@@ -990,8 +990,15 @@ ec_add_grid(__global bn_word *points_out, __global bignum *z_heap,
 
 	bn_mod_sub(&z, &x1, &rx);
 
-	z_heap[(2 * get_global_id(1) * get_global_size(0)) +
-	       (get_global_size(0) - 1) + get_global_id(0)] = z;
+	cell = ((get_global_id(1) * get_global_size(0)) + get_global_id(0));
+	start = (((cell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+		 (cell % ACCESS_STRIDE));
+
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < BN_NWORDS; i++)
+		z_heap[start + (i*ACCESS_STRIDE)] = z.d[i];
 
 	bn_mod_sub(&b, &y1, &ry);
 	bn_mod_add(&c, &x1, &rx);
@@ -1006,7 +1013,6 @@ ec_add_grid(__global bn_word *points_out, __global bignum *z_heap,
 	 * various GPUs, by giving it a nice contiguous patch to write
 	 * per warp/wavefront.
 	 */
-	cell = ((get_global_id(1) * get_global_size(0)) + get_global_id(0));
 	start = ((((2 * cell) / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 		 (cell % (ACCESS_STRIDE/2)));
 
@@ -1037,20 +1043,44 @@ ec_add_grid(__global bn_word *points_out, __global bignum *z_heap,
 }
 
 __kernel void
-heap_invert(__global bignum *z_heap, int ncols)
+heap_invert(__global bn_word *z_heap, int batch)
 {
 	bignum a, b, c, z;
-	int i;
+	int i, j, off, lcell, hcell, start;
 
-	i = get_global_id(0);
-	z_heap += (2 * i * ncols);
+	off = get_global_size(0);
+	lcell = get_global_id(0);
+	hcell = (off * batch) + lcell;
+	for (i = 0; i < (batch-1); i++) {
+		start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+			 (lcell % ACCESS_STRIDE));
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+		for (j = 0; j < BN_NWORDS; j++)
+			a.d[j] = z_heap[start + j*ACCESS_STRIDE];
 
-	/* Compute the product hierarchy in z_heap */
-	for (i = ncols - 1; i > 0; i--) {
-		a = z_heap[(i*2) - 1];
-		b = z_heap[(i*2)];
+		lcell += off;
+		start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+			 (lcell % ACCESS_STRIDE));
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+		for (j = 0; j < BN_NWORDS; j++)
+			b.d[j] = z_heap[start + j*ACCESS_STRIDE];
+
 		bn_mul_mont(&z, &a, &b);
-		z_heap[i-1] = z;
+
+		start = (((hcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+			 (hcell % ACCESS_STRIDE));
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+		for (j = 0; j < BN_NWORDS; j++)
+			z_heap[start + j*ACCESS_STRIDE] = z.d[j];
+
+		lcell += off;
+		hcell += off;
 	}
 
 	/* Invert the root, fix up 1/ZR -> R/Z */
@@ -1063,21 +1093,68 @@ heap_invert(__global bignum *z_heap, int ncols)
 		a.d[i] = mont_rr[i];
 	bn_mul_mont(&z, &z, &a);
 	bn_mul_mont(&z, &z, &a);
-	z_heap[0] = z;
 
-	for (i = 1; i < ncols; i++) {
-		a = z_heap[i - 1];
-		b = z_heap[(i*2) - 1];
-		c = z_heap[i*2];
-		bn_mul_mont(&z, &a, &c);
-		z_heap[(i*2) - 1] = z;
-		bn_mul_mont(&z, &a, &b);
-		z_heap[i*2] = z;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (j = 0; j < BN_NWORDS; j++)
+		z_heap[start + j*ACCESS_STRIDE] = z.d[j];
+
+	lcell = (off * 2 * (batch - 2)) + get_global_id(0);
+	hcell = lcell + (off << 1);
+	for (i = 0; i < (batch-1); i++) {
+		start = (((hcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+			 (hcell % ACCESS_STRIDE));
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+		for (j = 0; j < BN_NWORDS; j++)
+			z.d[j] = z_heap[start + j*ACCESS_STRIDE];
+
+
+		start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+			 (lcell % ACCESS_STRIDE));
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+		for (j = 0; j < BN_NWORDS; j++)
+			a.d[j] = z_heap[start + j*ACCESS_STRIDE];
+
+		lcell += off;
+		start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+			 (lcell % ACCESS_STRIDE));
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+		for (j = 0; j < BN_NWORDS; j++)
+			b.d[j] = z_heap[start + j*ACCESS_STRIDE];
+
+		bn_mul_mont(&c, &a, &z);
+
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+		for (j = 0; j < BN_NWORDS; j++)
+			z_heap[start + j*ACCESS_STRIDE] = c.d[j];
+
+		bn_mul_mont(&c, &b, &z);
+
+		lcell -= off;
+		start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+			 (lcell % ACCESS_STRIDE));
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+		for (j = 0; j < BN_NWORDS; j++)
+			z_heap[start + j*ACCESS_STRIDE] = c.d[j];
+
+		lcell -= (off << 1);
+		hcell -= off;
 	}
 }
 
 void
-hash_ec_point(uint *hash_out, __global bn_word *xy, __global bignum *zip)
+hash_ec_point(uint *hash_out, __global bn_word *xy, __global bn_word *zip)
 {
 	uint hash1[16], hash2[16];
 	bignum c, zi, zzi;
@@ -1091,13 +1168,20 @@ hash_ec_point(uint *hash_out, __global bn_word *xy, __global bignum *zip)
 	 * is big-endian, so swapping is unnecessary, but
 	 * inserting the format byte in front causes a headache.
 	 */
-	zi = zip[0];
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < BN_NWORDS; i++)
+		zi.d[i] = zip[i*ACCESS_STRIDE];
+
 	bn_mul_mont(&zzi, &zi, &zi);  /* 1 / Z^2 */
+
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
 	for (i = 0; i < BN_NWORDS; i++)
 		c.d[i] = xy[i*ACCESS_STRIDE];
+
 	bn_mul_mont(&c, &c, &zzi);  /* X / Z^2 */
 	bn_from_mont(&c, &c);
 
@@ -1181,23 +1265,26 @@ hash_ec_point(uint *hash_out, __global bn_word *xy, __global bignum *zip)
 
 __kernel void
 hash_ec_point_get(__global uint *hashes_out,
-		  __global bn_word *points_in, __global bignum *z_heap)
+		  __global bn_word *points_in, __global bn_word *z_heap)
 {
 	uint hash[5];
 	int i, p, cell, start;
 
-	p = get_global_size(0);
-	i = p * get_global_id(1);
-	z_heap += (i * 2);
-	hashes_out += 5 * (i + get_global_id(0));
-
 	cell = ((get_global_id(1) * get_global_size(0)) + get_global_id(0));
+	start = (((cell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+		 (cell % ACCESS_STRIDE));
+	z_heap += start;
+
 	start = ((((2 * cell) / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 		 (cell % (ACCESS_STRIDE/2)));
 	points_in += start;
 
 	/* Complete the coordinates and hash */
-	hash_ec_point(hash, points_in, &z_heap[(p - 1) + get_global_id(0)]);
+	hash_ec_point(hash, points_in, z_heap);
+
+	p = get_global_size(0);
+	i = p * get_global_id(1);
+	hashes_out += 5 * (i + get_global_id(0));
 
 	/* Output the hash in proper byte-order */
 #ifdef UNROLL_MAX
@@ -1239,23 +1326,23 @@ hash160_ucmp_g(uint *a, __global uint *bound)
 __kernel void
 hash_ec_point_search_prefix(__global uint *found,
 			    __global bn_word *points_in,
-			    __global bignum *z_heap,
+			    __global bn_word *z_heap,
 			    __global uint *target_table, int ntargets)
 {
 	uint hash[5];
 	int i, high, low, p, cell, start;
 
-	p = get_global_size(0);
-	i = p * get_global_id(1);
-	z_heap += (i * 2);
-
 	cell = ((get_global_id(1) * get_global_size(0)) + get_global_id(0));
+	start = (((cell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+		 (cell % ACCESS_STRIDE));
+	z_heap += start;
+
 	start = ((((2 * cell) / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 		 (cell % (ACCESS_STRIDE/2)));
 	points_in += start;
 
 	/* Complete the coordinates and hash */
-	hash_ec_point(hash, points_in, &z_heap[(p - 1) + get_global_id(0)]);
+	hash_ec_point(hash, points_in, z_heap);
 
 	/*
 	 * Unconditionally byteswap the hash result, because:
