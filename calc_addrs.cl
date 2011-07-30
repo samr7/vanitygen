@@ -972,7 +972,7 @@ calc_addrs(__global uint *hashes_out,
 
 __kernel void
 ec_add_grid(__global bn_word *points_out, __global bn_word *z_heap, 
-	    __global bignum *row_in, __global bignum *col_in)
+	    __global bn_word *row_in, __global bignum *col_in)
 {
 	bignum rx, ry;
 	bignum x1, y1, a, b, c, d, e, z;
@@ -984,13 +984,25 @@ ec_add_grid(__global bn_word *points_out, __global bn_word *z_heap,
 	rx = col_in[i];
 	ry = col_in[i+1];
 
-	i = 2 * get_global_id(0);
-	x1 = row_in[i];
-	y1 = row_in[i+1];
+	cell = get_global_id(0);
+	start = ((((2 * cell) / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+		 (cell % (ACCESS_STRIDE/2)));
+
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < BN_NWORDS; i++)
+		x1.d[i] = row_in[start + (i*ACCESS_STRIDE)];
+	start += (ACCESS_STRIDE/2);
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < BN_NWORDS; i++)
+		y1.d[i] = row_in[start + (i*ACCESS_STRIDE)];
 
 	bn_mod_sub(&z, &x1, &rx);
 
-	cell = ((get_global_id(1) * get_global_size(0)) + get_global_id(0));
+	cell += (get_global_id(1) * get_global_size(0));
 	start = (((cell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 		 (cell % ACCESS_STRIDE));
 

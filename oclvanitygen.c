@@ -70,6 +70,7 @@ typedef struct _vg_ocl_context_s {
 	int				voc_ocl_slot;
 	int				voc_ocl_rows;
 	int				voc_ocl_cols;
+	int				voc_ocl_invsize;
 	int				voc_halt;
 	int				voc_rekey;
 } vg_ocl_context_t;
@@ -613,21 +614,50 @@ vg_ocl_kernel_int_arg(vg_ocl_context_t *vocp, int slot,
 }
 
 int
+vg_ocl_kernel_buffer_arg(vg_ocl_context_t *vocp, int slot,
+			 int arg, void *value, size_t size)
+{
+	cl_int ret;
+	int i, j, knum, karg;
+
+	for (i = 0; i < MAX_SLOT; i++) {
+		if ((i != slot) && (slot >= 0))
+			continue;
+		for (j = 0; vg_ocl_arg_map[arg][j] >= 0; j += 2) {
+			knum = vg_ocl_arg_map[arg][j];
+			karg = vg_ocl_arg_map[arg][j+1];
+			ret = clSetKernelArg(vocp->voc_oclkernel[i][knum],
+					     karg,
+					     size,
+					     value);
+			if (ret) {
+				printf("clSetKernelArg(%d,%d): ", knum, karg);
+				vg_ocl_error(vocp, ret, NULL);
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
+int
 vg_ocl_kernel_dead(vg_ocl_context_t *vocp, int slot)
 {
 	return (vocp->voc_oclkrnwait[slot] == NULL);
 }
 
 int
-vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow)
+vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow,
+		    int invsize)
 {
 	cl_int val, ret;
 	cl_event ev;
 	size_t globalws[2] = { ncol, nrow };
+	size_t invws = invsize;
 
 	assert(!vocp->voc_oclkrnwait[slot]);
 
-	val = ncol;
+	val = (ncol * nrow) / invsize;
 	ret = clSetKernelArg(vocp->voc_oclkernel[slot][1],
 			     1,
 			     sizeof(val),
@@ -657,7 +687,7 @@ vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow)
 	ret = clEnqueueNDRangeKernel(vocp->voc_oclcmdq,
 				     vocp->voc_oclkernel[slot][1],
 				     1,
-				     NULL, &globalws[1], NULL,
+				     NULL, &invws, NULL,
 				     0, NULL,
 				     &ev);
 	if (ret != CL_SUCCESS) {
@@ -727,6 +757,29 @@ vg_ocl_put_point(unsigned char *buf, EC_POINT *ppnt)
 	assert(ppnt->Z_is_one);
 	memcpy(buf, ppnt->X.d, 32);
 	memcpy(buf + 32, ppnt->Y.d, 32);
+}
+
+#define ACCESS_BUNDLE 1024
+#define ACCESS_STRIDE (ACCESS_BUNDLE/8)
+
+INLINE void
+vg_ocl_put_point_tpa(unsigned char *buf, int cell, EC_POINT *ppnt)
+{
+	uint8_t pntbuf[64];
+	int start, i;
+
+	vg_ocl_put_point(pntbuf, ppnt);
+
+	start = ((((2 * cell) / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+		 (cell % (ACCESS_STRIDE/2)));
+	for (i = 0; i < 8; i++)
+		memcpy(buf + 4*(start + i*ACCESS_STRIDE),
+		       pntbuf+(i*4),
+		       4);
+	for (i = 0; i < 8; i++)
+		memcpy(buf + 4*(start + (ACCESS_STRIDE/2) + (i*ACCESS_STRIDE)),
+		       pntbuf+32+(i*4),
+		       4);
 }
 
 void
@@ -876,8 +929,7 @@ vg_ocl_prefix_check(vg_ocl_context_t *vocp, int slot)
 			printf("CPU hash: ");
 			dumphex(vxcp->vxc_binres + 1, 20);
 			printf("GPU hash: ");
-			dumphex((unsigned char *) (ocl_found_out + 3), 20);
-			printf("Table size: %d\n", ocl_found_out[2]);
+			dumphex((unsigned char *) (ocl_found_out + 2), 20);
 			printf("Found delta: %d "
 			       "Start delta: %d\n",
 			       found_delta, orig_delta);
@@ -939,7 +991,7 @@ vg_opencl_thread(void *arg)
 	vg_context_t *vcp = vocp->base.vxc_vc;
 	int halt = 0;
 	int slot = -1;
-	int rows, cols;
+	int rows, cols, invsize;
 	unsigned long long idleu, busyu;
 	double pidle;
 	struct timeval tv, tvt, tvd, idle, busy;
@@ -978,10 +1030,11 @@ vg_opencl_thread(void *arg)
 		slot = vocp->voc_ocl_slot;
 		rows = vocp->voc_ocl_rows;
 		cols = vocp->voc_ocl_cols;
+		invsize = vocp->voc_ocl_invsize;
 		pthread_mutex_unlock(&vocp->voc_lock);
 
 		gettimeofday(&tv, NULL);
-		if (!vg_ocl_kernel_start(vocp, slot, cols, rows))
+		if (!vg_ocl_kernel_start(vocp, slot, cols, rows, invsize))
 			halt = 1;
 
 		if (!vg_ocl_kernel_wait(vocp, slot))
@@ -1018,10 +1071,11 @@ out:
  */
 
 void *
-vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize)
+vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize,
+	       int batchsize, int invsize)
 {
 	int i;
-	int batchsize, round;
+	int round;
 
 	const BN_ULONG rekey_max = 100000000;
 	BN_ULONG npoints, rekey_at;
@@ -1052,19 +1106,25 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize)
 	pgen = EC_GROUP_get0_generator(pgroup);
 
 	/*
-	 * batchsize: number of points to process in each thread
-	 * worksize: number of threads per kernel
+	 * batchsize: number of point columns per job
+	 * worksize: number of point rows per job
+	 * invsize: number of modular inversion tasks per job
+	 *    (each task performs (batchsize*worksize)/invsize inversions)
 	 * nslots: number of kernels
+	 *    (create two, keep one running while we service the other or wait)
 	 */
 
-	batchsize = 256;
+	if (!batchsize)
+		batchsize = 1024;
 	if (!worksize)
-		worksize = 4096;
+		worksize = 2048;
+	if (!invsize)
+		invsize = 4096;
 	nslots = 2;
 	slot = 0;
-
 	vocp->voc_ocl_cols = batchsize;
 	vocp->voc_ocl_rows = worksize;
+	vocp->voc_ocl_invsize = invsize;
 	vocp->voc_nslots = nslots;
 
 	ppbase = (EC_POINT **) malloc((batchsize + worksize) *
@@ -1118,7 +1178,8 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize)
 			     round_up_pow2(32 * 2 * round, 4096), 0) ||
 	    !vg_ocl_kernel_arg_alloc(vocp, -1, 2,
 			     round_up_pow2(32 * 2 * round, 4096), 0) ||
-	    !vg_ocl_kernel_arg_alloc(vocp, -1, 3, 32 * 2 * batchsize, 1))
+	    !vg_ocl_kernel_arg_alloc(vocp, -1, 3,
+			     round_up_pow2(32 * 2 * batchsize, 4096), 1))
 		goto enomem;
 
 	npoints = 0;
@@ -1169,7 +1230,7 @@ l_rekey:
 	if (!ocl_points_in)
 		goto enomem;
 	for (i = 0; i < batchsize; i++)
-		vg_ocl_put_point(ocl_points_in + (64*i), ppbase[i]);
+		vg_ocl_put_point_tpa(ocl_points_in, i, ppbase[i]);
 	vg_ocl_unmap_arg_buffer(vocp, 0, 3, ocl_points_in);
 
 	/*
@@ -1574,7 +1635,9 @@ usage(const char *name)
 "-T            Generate bitcoin testnet address\n"
 "-p <platform> Select OpenCL platform\n"
 "-d <device>   Select OpenCL device\n"
-"-w <worksize> Set OpenCL work size (Default: number of CPUs)\n"
+"-w <worksize> Set number of rows in OpenCL task\n"
+"-c <ncols>    Set number of columns in OpenCL task (default 256)\n"
+"-b <invsize>  Set modular inverse work size (default 4096)\n"
 "-f <file>     File containing list of patterns, one per line\n"
 "              (Use \"-\" as the file name for stdin)\n"
 "-o <file>     Write pattern matches to <file>\n"
@@ -1597,12 +1660,14 @@ main(int argc, char **argv)
 	int verbose = 1;
 	int npatterns = 0;
 	int worksize = 0;
+	int ncols = 0;
+	int invsize = 0;
 	int remove_on_match = 1;
 	vg_context_t *vcp = NULL;
 	cl_device_id did;
 	const char *result_file = NULL;
 
-	while ((opt = getopt(argc, argv, "vqrikNTp:d:w:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqrikNTp:d:w:c:b:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -1636,7 +1701,22 @@ main(int argc, char **argv)
 		case 'w':
 			worksize = atoi(optarg);
 			if (worksize == 0) {
-				printf("Invalid thread count '%s'\n", optarg);
+				printf("Invalid work size '%s'\n", optarg);
+				return 1;
+			}
+			break;
+		case 'c':
+			ncols = atoi(optarg);
+			if (ncols == 0) {
+				printf("Invalid column count '%s'\n", optarg);
+				return 1;
+			}
+			break;
+		case 'b':
+			invsize = atoi(optarg);
+			if (invsize == 0) {
+				printf("Invalid modular inverse size '%s'\n",
+				       optarg);
 				return 1;
 			}
 			break;
@@ -1752,6 +1832,6 @@ main(int argc, char **argv)
 		return 1;
 	}
 
-	vg_opencl_loop(vcp, did, worksize);
+	vg_opencl_loop(vcp, did, worksize, ncols, invsize);
 	return 0;
 }
