@@ -26,6 +26,7 @@
 #include <openssl/ec.h>
 #include <openssl/bn.h>
 #include <openssl/rand.h>
+#include <openssl/md5.h>
 
 #include <CL/cl.h>
 
@@ -165,6 +166,38 @@ vg_ocl_strerror(cl_int ret)
 
 /* Get device strings, using a static buffer -- caveat emptor */
 const char *
+vg_ocl_platform_getstr(cl_platform_id pid, cl_platform_info param)
+{
+	static char platform_str[1024];
+	cl_int ret;
+	size_t size_ret;
+	ret = clGetPlatformInfo(pid, param,
+				sizeof(platform_str), platform_str,
+				&size_ret);
+	if (ret != CL_SUCCESS) {
+		snprintf(platform_str, sizeof(platform_str),
+			 "clGetPlatformInfo(%d): %s",
+			 param, vg_ocl_strerror(ret));
+	}
+	return platform_str;
+}
+
+cl_platform_id
+vg_ocl_device_getplatform(cl_device_id did)
+{
+	cl_int ret;
+	cl_platform_id val;
+	size_t size_ret;
+	ret = clGetDeviceInfo(did, CL_DEVICE_PLATFORM,
+			      sizeof(val), &val, &size_ret);
+	if (ret != CL_SUCCESS) {
+		printf("clGetDeviceInfo(CL_DEVICE_PLATFORM): %s",
+		       vg_ocl_strerror(ret));
+	}
+	return val;
+}
+
+const char *
 vg_ocl_device_getstr(cl_device_id did, cl_device_info param)
 {
 	static char device_str[1024];
@@ -237,9 +270,9 @@ vg_ocl_dump_info(vg_ocl_context_t *vocp)
 	       vg_ocl_device_getstr(did, CL_DEVICE_PROFILE));
 	printf("Version: %s\n",
 	       vg_ocl_device_getstr(did, CL_DEVICE_VERSION));
-	printf("Max compute units: %zd\n",
+	printf("Max compute units: %"PRSIZET"d\n",
 	       vg_ocl_device_getsizet(did, CL_DEVICE_MAX_COMPUTE_UNITS));
-	printf("Max workgroup size: %zd\n",
+	printf("Max workgroup size: %"PRSIZET"d\n",
 	       vg_ocl_device_getsizet(did, CL_DEVICE_MAX_WORK_GROUP_SIZE));
 	printf("Global memory: %ld\n",
 	       vg_ocl_device_getulong(did, CL_DEVICE_GLOBAL_MEM_SIZE));
@@ -345,18 +378,43 @@ vg_ocl_create_kernel(vg_ocl_context_t *vocp, int knum, const char *func)
 	return 1;
 }
 
+void
+vg_ocl_hash_program(vg_ocl_context_t *vocp, const char *opts,
+		    const char *program, size_t size,
+		    unsigned char *hash_out)
+{
+	MD5_CTX ctx;
+	cl_platform_id pid;
+	const char *str;
+
+	MD5_Init(&ctx);
+	pid = vg_ocl_device_getplatform(vocp->voc_ocldid);
+	str = vg_ocl_platform_getstr(pid, CL_PLATFORM_NAME);
+	MD5_Update(&ctx, str, strlen(str) + 1);
+	str = vg_ocl_platform_getstr(pid, CL_PLATFORM_VERSION);
+	MD5_Update(&ctx, str, strlen(str) + 1);
+	str = vg_ocl_device_getstr(vocp->voc_ocldid, CL_DEVICE_NAME);
+	MD5_Update(&ctx, str, strlen(str) + 1);
+	MD5_Update(&ctx, opts, strlen(opts) + 1);
+	MD5_Update(&ctx, program, size);
+	MD5_Final(hash_out, &ctx);
+}
+
 int
 vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 		    const char *filename, const char *opts)
 {
 	FILE *kfp;
-	char *buf;
-	int len;
-	size_t sz;
+	char *buf, *tbuf;
+	int len, fromsource = 0;
+	size_t sz, szr;
 	cl_program prog;
-	cl_int ret;
+	cl_int ret, sts;
+	unsigned char prog_hash[16];
+	char bin_name[64];
 
-	buf = (char *) malloc(128 * 1024);
+	sz = 128 * 1024;
+	buf = (char *) malloc(sz);
 	if (!buf) {
 		printf("Could not allocate program buffer\n");
 		return 0;
@@ -369,13 +427,64 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 		return 0;
 	}
 
-	len = fread(buf, 1, 128 * 1024, kfp);
+	len = fread(buf, 1, sz, kfp);
 	fclose(kfp);
 
-	sz = len;
-	prog = clCreateProgramWithSource(vocp->voc_oclctx,
-					 1, (const char **) &buf, &sz,
-					 &ret);
+	if (!len) {
+		printf("Short read on CL kernel\n");
+		free(buf);
+		return 0;
+	}
+
+	vg_ocl_hash_program(vocp, opts, buf, len, prog_hash);
+	snprintf(bin_name, sizeof(bin_name),
+		 "%02x%02x%02x%02x%02x%02x%02x%02x"
+		 "%02x%02x%02x%02x%02x%02x%02x%02x.oclbin",
+		 prog_hash[0], prog_hash[1], prog_hash[2], prog_hash[3],
+		 prog_hash[4], prog_hash[5], prog_hash[6], prog_hash[7],
+		 prog_hash[8], prog_hash[9], prog_hash[10], prog_hash[11],
+		 prog_hash[12], prog_hash[13], prog_hash[14], prog_hash[15]);
+
+	kfp = fopen(bin_name, "r");
+	if (!kfp) {
+		/* No binary available, create with source */
+		fromsource = 1;
+		sz = len;
+		prog = clCreateProgramWithSource(vocp->voc_oclctx,
+						 1, (const char **) &buf, &sz,
+						 &ret);
+	} else {
+		szr = 0;
+		while (!feof(kfp)) {
+			len = fread(buf + szr, 1, sz - szr, kfp);
+			if (!len) {
+				printf("Short read on CL kernel binary\n");
+				fclose(kfp);
+				free(buf);
+				return 0;
+			}
+			szr += len;
+			if (szr == sz) {
+				tbuf = (char *) realloc(buf, sz*2);
+				if (!tbuf) {
+					printf("Could not expand CL kernel "
+					       "binary buffer\n");
+					fclose(kfp);
+					free(buf);
+					return 0;
+				}
+				buf = tbuf;
+				sz *= 2;
+			}
+		}
+		fclose(kfp);
+		prog = clCreateProgramWithBinary(vocp->voc_oclctx,
+						 1, &vocp->voc_ocldid,
+						 &szr,
+						 (const unsigned char **) &buf,
+						 &sts,
+						 &ret);
+	}
 	free(buf);
 	if (!prog) {
 		vg_ocl_error(vocp, ret, "clCreateProgramWithSource");
@@ -383,15 +492,19 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 	}
 
 	if (vcp->vc_verbose > 0) {
-		printf("Compiling kernel...");
-		fflush(stdout);
+		if (fromsource) {
+			printf("Compiling kernel...");
+			fflush(stdout);
+		}
+		else if (vcp->vc_verbose > 1)
+			printf("Loading kernel binary %s\n", bin_name);
 	}
 	ret = clBuildProgram(prog, 1, &vocp->voc_ocldid, opts, NULL, NULL);
 	if (ret != CL_SUCCESS) {
-		if (vcp->vc_verbose > 0)
+		if ((vcp->vc_verbose > 0) && fromsource)
 			printf("failure.\n");
 		vg_ocl_error(NULL, ret, "clBuildProgram");
-	} else if (vcp->vc_verbose > 0) {
+	} else if ((vcp->vc_verbose > 0) && fromsource) {
 		printf("done!\n");
 	}
 	if ((ret != CL_SUCCESS) || (vcp->vc_verbose > 1)) {
@@ -403,6 +516,58 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 		return 0;
 	}
 
+	if (fromsource) {
+		ret = clGetProgramInfo(prog,
+				       CL_PROGRAM_BINARY_SIZES,
+				       sizeof(szr), &szr,
+				       &sz);
+		if (ret != CL_SUCCESS) {
+			vg_ocl_error(vocp, ret,
+				     "WARNING: clGetProgramInfo(BINARY_SIZES)");
+			goto out;
+		}
+		if (sz == 0) {
+			printf("WARNING: zero-length CL kernel binary\n");
+			goto out;
+		}
+
+		buf = (char *) malloc(szr);
+		if (!buf) {
+			printf("WARNING: Could not allocate %"PRSIZET"d bytes "
+			       "for CL binary\n",
+			       szr);
+			goto out;
+		}
+
+		ret = clGetProgramInfo(prog,
+				       CL_PROGRAM_BINARIES,
+				       sizeof(buf), &buf,
+				       &sz);
+		if (ret != CL_SUCCESS) {
+			vg_ocl_error(vocp, ret,
+				     "WARNING: clGetProgramInfo(BINARIES)");
+			free(buf);
+			goto out;
+		}
+
+		kfp = fopen(bin_name, "w");
+		if (!kfp) {
+			printf("WARNING: could not save CL kernel binary: %s\n",
+			       strerror(errno));
+		} else {
+			sz = fwrite(buf, 1, szr, kfp);
+			fclose(kfp);
+			if (sz != szr) {
+				printf("WARNING: short write on CL kernel "
+				       "binary file: %s\n",
+				       strerror(errno));
+				unlink(bin_name);
+			}
+		}
+		free(buf);
+	}
+
+out:
 	vocp->voc_oclprog = prog;
 	if (!vg_ocl_create_kernel(vocp, 0, "ec_add_grid") ||
 	    !vg_ocl_create_kernel(vocp, 1, "heap_invert")) {
