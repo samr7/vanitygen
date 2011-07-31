@@ -252,7 +252,7 @@ vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last)
 	pthread_t me;
 	struct timeval tvnow, tv;
 	timing_info_t *tip, *mytip;
-	unsigned long long rate, myrate, mytime;
+	unsigned long long rate, myrate = 0, mytime;
 	double count, prob, time, targ;
 	char linebuf[80];
 	char *unit;
