@@ -41,4 +41,6 @@ extern int getopt(int argc, TCHAR *argv[], TCHAR *optstring);
 
 extern int count_processors(void);
 
+#define PRSIZET "I"
+
 #endif /* !defined (__VG_WINGLUE_H__) */

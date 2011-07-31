@@ -28,6 +28,7 @@
 #include "winglue.h"
 #else
 #define INLINE inline
+#define PRSIZET "z"
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <errno.h>
