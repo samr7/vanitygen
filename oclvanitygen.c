@@ -704,11 +704,11 @@ vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow,
 	cl_int val, ret;
 	cl_event ev;
 	size_t globalws[2] = { ncol, nrow };
-	size_t invws = invsize;
+	size_t invws = (ncol * nrow) / invsize;
 
 	assert(!vocp->voc_oclkrnwait[slot]);
 
-	val = (ncol * nrow) / invsize;
+	val = invsize;
 	ret = clSetKernelArg(vocp->voc_oclkernel[slot][1],
 			     1,
 			     sizeof(val),
@@ -1176,33 +1176,18 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize,
 					       CL_DEVICE_MAX_COMPUTE_UNITS);
 	full_worksize *= worksize;
 
-	if (!invsize) {
-		if (ncols) {
-			round = ncols * nrows;
-			invsize = 1;
-			while (!(round % (invsize << 1)) &&
-			       ((round / invsize) > full_worksize))
-				invsize <<= 1;
-
-			invsize = round / invsize;
-
-		} else {
-			invsize = full_worksize;
-		}
-	}
-
 	if (!ncols) {
 		memsize = vg_ocl_device_getulong(vocp->voc_ocldid,
 					CL_DEVICE_GLOBAL_MEM_SIZE);
 		allocsize = vg_ocl_device_getulong(vocp->voc_ocldid,
 					CL_DEVICE_MAX_MEM_ALLOC_SIZE);
 		memsize /= 2;
-		nrows = invsize;
-		ncols = 1;
-		/* Find row and column counts close to sqrt(invsize) */
-		while ((nrows > ncols) && !(nrows & 1)) {
-			ncols <<= 1;
-			nrows >>= 1;
+		ncols = full_worksize;
+		nrows = 1;
+		/* Find row and column counts close to sqrt(full_worksize) */
+		while ((ncols > nrows) && !(ncols & 1)) {
+			ncols >>= 1;
+			nrows <<= 1;
 		}
 		/* Increase row & column counts to saturate device memory */
 		while (((ncols * nrows * 2 * 128) < memsize) &&
@@ -1216,27 +1201,31 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize,
 
 	round = nrows * ncols;
 
+	if (!invsize) {
+		invsize = 1;
+		while (!(round % (invsize << 1)) &&
+		       ((round / invsize) > full_worksize))
+			invsize <<= 1;
+	}
+
 	if (vcp->vc_verbose > 1) {
 		printf("Grid size: %dx%d\n", ncols, nrows);
 		printf("Modular inverse: %d threads, %d ops each\n",
-		       invsize, round/invsize);
+		       round/invsize, invsize);
 	}
 
-	i = round / invsize;
-
-	if ((round % invsize) ||
-	    (i & (i-1))) {
+	if ((round % invsize) || (invsize & (invsize-1))) {
 		if (vcp->vc_verbose <= 1) {
 			printf("Grid size: %dx%d\n", ncols, nrows);
 			printf("Modular inverse: %d threads, %d ops each\n",
-			       invsize, round/invsize);
+			       round/invsize, invsize);
 		}
 		if (round % invsize)
 			printf("Modular inverse work size must "
 			       "evenly divide points\n");
 		else
 			printf("Modular inverse work per task (%d) "
-			       "must be a power of 2\n", i);
+			       "must be a power of 2\n", invsize);
 		goto out;
 	}
 
@@ -1836,9 +1825,14 @@ main(int argc, char **argv)
 			break;
 		case 'b':
 			invsize = atoi(optarg);
-			if (invsize == 0) {
+			if (!invsize) {
 				printf("Invalid modular inverse size '%s'\n",
 				       optarg);
+				return 1;
+			}
+			if (invsize & (invsize - 1)) {
+				printf("Modular inverse size must be "
+				       "a power of 2\n");
 				return 1;
 			}
 			break;
