@@ -175,10 +175,49 @@ vg_ocl_device_getstr(cl_device_id did, cl_device_info param)
 			      &size_ret);
 	if (ret != CL_SUCCESS) {
 		snprintf(device_str, sizeof(device_str),
-			 "clGetDeviceInfo: %s",
-			 vg_ocl_strerror(ret));
+			 "clGetDeviceInfo(%d): %s",
+			 param, vg_ocl_strerror(ret));
 	}
 	return device_str;
+}
+
+size_t
+vg_ocl_device_getsizet(cl_device_id did, cl_device_info param)
+{
+	cl_int ret;
+	size_t val;
+	size_t size_ret;
+	ret = clGetDeviceInfo(did, param, sizeof(val), &val, &size_ret);
+	if (ret != CL_SUCCESS) {
+		printf("clGetDeviceInfo(%d): %s", param, vg_ocl_strerror(ret));
+	}
+	return val;
+}
+
+cl_ulong
+vg_ocl_device_getulong(cl_device_id did, cl_device_info param)
+{
+	cl_int ret;
+	cl_ulong val;
+	size_t size_ret;
+	ret = clGetDeviceInfo(did, param, sizeof(val), &val, &size_ret);
+	if (ret != CL_SUCCESS) {
+		printf("clGetDeviceInfo(%d): %s", param, vg_ocl_strerror(ret));
+	}
+	return val;
+}
+
+size_t
+vg_ocl_device_getuint(cl_device_id did, cl_device_info param)
+{
+	cl_int ret;
+	size_t val;
+	size_t size_ret;
+	ret = clGetDeviceInfo(did, param, sizeof(val), &val, &size_ret);
+	if (ret != CL_SUCCESS) {
+		printf("clGetDeviceInfo(%d): %s", param, vg_ocl_strerror(ret));
+	}
+	return val;
 }
 
 void
@@ -198,6 +237,14 @@ vg_ocl_dump_info(vg_ocl_context_t *vocp)
 	       vg_ocl_device_getstr(did, CL_DEVICE_PROFILE));
 	printf("Version: %s\n",
 	       vg_ocl_device_getstr(did, CL_DEVICE_VERSION));
+	printf("Max compute units: %zd\n",
+	       vg_ocl_device_getsizet(did, CL_DEVICE_MAX_COMPUTE_UNITS));
+	printf("Max workgroup size: %zd\n",
+	       vg_ocl_device_getsizet(did, CL_DEVICE_MAX_WORK_GROUP_SIZE));
+	printf("Global memory: %ld\n",
+	       vg_ocl_device_getulong(did, CL_DEVICE_GLOBAL_MEM_SIZE));
+	printf("Max allocation: %ld\n",
+	       vg_ocl_device_getulong(did, CL_DEVICE_MAX_MEM_ALLOC_SIZE));
 }
 
 void
@@ -389,6 +436,10 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did)
 	vocp->voc_ocl_slot = -1;
 
 	vocp->voc_ocldid = did;
+
+	if (vcp->vc_verbose > 1)
+		vg_ocl_dump_info(vocp);
+
 	vocp->voc_oclctx = clCreateContext(NULL,
 					   1, &did,
 					   vg_ocl_context_callback,
@@ -1072,10 +1123,11 @@ out:
 
 void *
 vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize,
-	       int batchsize, int invsize)
+	       int nrows, int ncols, int invsize)
 {
 	int i;
-	int round;
+	int round, full_worksize;
+	cl_ulong memsize, allocsize;
 
 	const BN_ULONG rekey_max = 100000000;
 	BN_ULONG npoints, rekey_at;
@@ -1106,56 +1158,122 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize,
 	pgen = EC_GROUP_get0_generator(pgroup);
 
 	/*
-	 * batchsize: number of point columns per job
-	 * worksize: number of point rows per job
+	 * nrows: number of point rows per job
+	 * ncols: number of point columns per job
 	 * invsize: number of modular inversion tasks per job
-	 *    (each task performs (batchsize*worksize)/invsize inversions)
+	 *    (each task performs (nrows*ncols)/invsize inversions)
 	 * nslots: number of kernels
 	 *    (create two, keep one running while we service the other or wait)
 	 */
 
-	if (!batchsize)
-		batchsize = 1024;
-	if (!worksize)
-		worksize = 2048;
-	if (!invsize)
-		invsize = 4096;
+	if (!worksize) {
+		/* Pick a work size sufficient to saturate one compute unit */
+		worksize = vg_ocl_device_getsizet(vocp->voc_ocldid,
+					  CL_DEVICE_MAX_WORK_GROUP_SIZE);
+	}
+
+	full_worksize = vg_ocl_device_getsizet(vocp->voc_ocldid,
+					       CL_DEVICE_MAX_COMPUTE_UNITS);
+	full_worksize *= worksize;
+
+	if (!invsize) {
+		if (ncols) {
+			round = ncols * nrows;
+			invsize = 1;
+			while (!(round % (invsize << 1)) &&
+			       ((round / invsize) > full_worksize))
+				invsize <<= 1;
+
+			invsize = round / invsize;
+
+		} else {
+			invsize = full_worksize;
+		}
+	}
+
+	if (!ncols) {
+		memsize = vg_ocl_device_getulong(vocp->voc_ocldid,
+					CL_DEVICE_GLOBAL_MEM_SIZE);
+		allocsize = vg_ocl_device_getulong(vocp->voc_ocldid,
+					CL_DEVICE_MAX_MEM_ALLOC_SIZE);
+		memsize /= 2;
+		nrows = invsize;
+		ncols = 1;
+		/* Find row and column counts close to sqrt(invsize) */
+		while ((nrows > ncols) && !(nrows & 1)) {
+			ncols <<= 1;
+			nrows >>= 1;
+		}
+		/* Increase row & column counts to saturate device memory */
+		while (((ncols * nrows * 2 * 128) < memsize) &&
+		       ((ncols * nrows * 2 * 64) < allocsize)) {
+			if (ncols > nrows)
+				nrows *= 2;
+			else
+				ncols *= 2;
+		}
+	}
+
+	round = nrows * ncols;
+
+	if (vcp->vc_verbose > 1) {
+		printf("Grid size: %dx%d\n", ncols, nrows);
+		printf("Modular inverse: %d threads, %d ops each\n",
+		       invsize, round/invsize);
+	}
+
+	i = round / invsize;
+
+	if ((round % invsize) ||
+	    (i & (i-1))) {
+		if (vcp->vc_verbose <= 1) {
+			printf("Grid size: %dx%d\n", ncols, nrows);
+			printf("Modular inverse: %d threads, %d ops each\n",
+			       invsize, round/invsize);
+		}
+		if (round % invsize)
+			printf("Modular inverse work size must "
+			       "evenly divide points\n");
+		else
+			printf("Modular inverse work per task (%d) "
+			       "must be a power of 2\n", i);
+		goto out;
+	}
+
 	nslots = 2;
 	slot = 0;
-	vocp->voc_ocl_cols = batchsize;
-	vocp->voc_ocl_rows = worksize;
+	vocp->voc_ocl_rows = nrows;
+	vocp->voc_ocl_cols = ncols;
 	vocp->voc_ocl_invsize = invsize;
 	vocp->voc_nslots = nslots;
 
-	ppbase = (EC_POINT **) malloc((batchsize + worksize) *
+	ppbase = (EC_POINT **) malloc((nrows + ncols) *
 				      sizeof(EC_POINT*));
 	if (!ppbase)
 		goto enomem;
 
-	for (i = 0; i < (batchsize + worksize); i++) {
+	for (i = 0; i < (nrows + ncols); i++) {
 		ppbase[i] = EC_POINT_new(pgroup);
 		if (!ppbase[i])
 			goto enomem;
 	}
 
-	pprow = ppbase + batchsize;
+	pprow = ppbase + ncols;
 	pbatchinc = EC_POINT_new(pgroup);
 	poffset = EC_POINT_new(pgroup);
 	pseek = EC_POINT_new(pgroup);
 	if (!pbatchinc || !poffset || !pseek)
 		goto enomem;
 
-	BN_set_word(&vxcp->vxc_bntmp, batchsize);
+	BN_set_word(&vxcp->vxc_bntmp, ncols);
 	EC_POINT_mul(pgroup, pbatchinc, &vxcp->vxc_bntmp, NULL, NULL,
 		     vxcp->vxc_bnctx);
 	EC_POINT_make_affine(pgroup, pbatchinc, vxcp->vxc_bnctx);
 
-	BN_set_word(&vxcp->vxc_bntmp, worksize * batchsize);
+	BN_set_word(&vxcp->vxc_bntmp, round);
 	EC_POINT_mul(pgroup, poffset, &vxcp->vxc_bntmp, NULL, NULL,
 		     vxcp->vxc_bnctx);
 	EC_POINT_make_affine(pgroup, poffset, vxcp->vxc_bnctx);
-
-	round = batchsize * worksize;
 
 	if (!vg_ocl_config_pattern(vocp))
 		goto enomem;
@@ -1165,7 +1283,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize,
 		 * Each work group gets its own:
 		 * - Column point array
 		 */
-		if (!vg_ocl_kernel_arg_alloc(vocp, i, 4, 32 * 2 * worksize, 1))
+		if (!vg_ocl_kernel_arg_alloc(vocp, i, 4, 32 * 2 * nrows, 1))
 			goto enomem;
 	}
 
@@ -1179,7 +1297,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize,
 	    !vg_ocl_kernel_arg_alloc(vocp, -1, 2,
 			     round_up_pow2(32 * 2 * round, 4096), 0) ||
 	    !vg_ocl_kernel_arg_alloc(vocp, -1, 3,
-			     round_up_pow2(32 * 2 * batchsize, 4096), 1))
+			     round_up_pow2(32 * 2 * ncols, 4096), 1))
 		goto enomem;
 
 	npoints = 0;
@@ -1214,22 +1332,21 @@ l_rekey:
 	EC_POINT_copy(ppbase[0], EC_KEY_get0_public_key(pkey));
 
 	/* Build the base array of sequential points */
-	for (i = 1; i < batchsize; i++) {
+	for (i = 1; i < ncols; i++) {
 		EC_POINT_add(pgroup,
 			     ppbase[i],
 			     ppbase[i-1],
 			     pgen, vxcp->vxc_bnctx);
 	}
 
-	EC_POINTs_make_affine(pgroup, batchsize, ppbase,
-			      vxcp->vxc_bnctx);
+	EC_POINTs_make_affine(pgroup, ncols, ppbase, vxcp->vxc_bnctx);
 
 	/* Fill the sequential point array */
 	ocl_points_in = (unsigned char *)
 		vg_ocl_map_arg_buffer(vocp, 0, 3, 1);
 	if (!ocl_points_in)
 		goto enomem;
-	for (i = 0; i < batchsize; i++)
+	for (i = 0; i < ncols; i++)
 		vg_ocl_put_point_tpa(ocl_points_in, i, ppbase[i]);
 	vg_ocl_unmap_arg_buffer(vocp, 0, 3, ocl_points_in);
 
@@ -1239,13 +1356,13 @@ l_rekey:
 	 * skipping the exact key generated above.
 	 */
 	EC_POINT_copy(pprow[0], pgen);
-	for (i = 1; i < worksize; i++) {
+	for (i = 1; i < nrows; i++) {
 		EC_POINT_add(pgroup,
 			     pprow[i],
 			     pprow[i-1],
 			     pbatchinc, vxcp->vxc_bnctx);
 	}
-	EC_POINTs_make_affine(pgroup, worksize, pprow, vxcp->vxc_bnctx);
+	EC_POINTs_make_affine(pgroup, nrows, pprow, vxcp->vxc_bnctx);
 	vxcp->vxc_delta = 1;
 	npoints = 1;
 	slot = 0;
@@ -1283,7 +1400,7 @@ l_rekey:
 		if ((npoints + round) < rekey_at) {
 			if (npoints > 1) {
 				/* Move the row increments forward */
-				for (i = 0; i < worksize; i++) {
+				for (i = 0; i < nrows; i++) {
 					EC_POINT_add(pgroup,
 						     pprow[i],
 						     pprow[i],
@@ -1291,7 +1408,7 @@ l_rekey:
 						     vxcp->vxc_bnctx);
 				}
 
-				EC_POINTs_make_affine(pgroup, worksize, pprow,
+				EC_POINTs_make_affine(pgroup, nrows, pprow,
 						      vxcp->vxc_bnctx);
 			}
 
@@ -1300,8 +1417,8 @@ l_rekey:
 				vg_ocl_map_arg_buffer(vocp, slot, 4, 1);
 			if (!ocl_strides_in)
 				goto enomem;
-			memset(ocl_strides_in, 0, 64*worksize);
-			for (i = 0; i < worksize; i++)
+			memset(ocl_strides_in, 0, 64*nrows);
+			for (i = 0; i < nrows; i++)
 				vg_ocl_put_point(ocl_strides_in + (64*i),
 						 pprow[i]);
 			vg_ocl_unmap_arg_buffer(vocp, slot, 4, ocl_strides_in);
@@ -1353,6 +1470,7 @@ l_rekey:
 		printf("ERROR: allocation failure?\n");
 	}
 
+out:
 	if (halt) {
 		if (vcp->vc_verbose > 1)
 			printf("Halting...");
@@ -1372,7 +1490,7 @@ l_rekey:
 	}
 
 	if (ppbase) {
-		for (i = 0; i < (batchsize + worksize); i++)
+		for (i = 0; i < (nrows + ncols); i++)
 			if (ppbase[i])
 				EC_POINT_free(ppbase[i]);
 		free(ppbase);
@@ -1635,9 +1753,9 @@ usage(const char *name)
 "-T            Generate bitcoin testnet address\n"
 "-p <platform> Select OpenCL platform\n"
 "-d <device>   Select OpenCL device\n"
-"-w <worksize> Set number of rows in OpenCL task\n"
-"-c <ncols>    Set number of columns in OpenCL task (default 256)\n"
-"-b <invsize>  Set modular inverse work size (default 4096)\n"
+"-w <worksize> Set target thread count per multiprocessor\n"
+"-g <x>x<y>    Set grid size\n"
+"-b <invsize>  Set modular inverse ops per thread\n"
 "-f <file>     File containing list of patterns, one per line\n"
 "              (Use \"-\" as the file name for stdin)\n"
 "-o <file>     Write pattern matches to <file>\n"
@@ -1656,18 +1774,18 @@ main(int argc, char **argv)
 	int platformidx = -1, deviceidx = -1;
 	char *seedfile = NULL;
 	FILE *fp = NULL;
-	char **patterns;
+	char **patterns, *pend;
 	int verbose = 1;
 	int npatterns = 0;
 	int worksize = 0;
-	int ncols = 0;
+	int nrows = 0, ncols = 0;
 	int invsize = 0;
 	int remove_on_match = 1;
 	vg_context_t *vcp = NULL;
 	cl_device_id did;
 	const char *result_file = NULL;
 
-	while ((opt = getopt(argc, argv, "vqrikNTp:d:w:c:b:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqrikNTp:d:w:g:b:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -1705,10 +1823,14 @@ main(int argc, char **argv)
 				return 1;
 			}
 			break;
-		case 'c':
-			ncols = atoi(optarg);
-			if (ncols == 0) {
-				printf("Invalid column count '%s'\n", optarg);
+		case 'g':
+			nrows = 0;
+			ncols = strtol(optarg, &pend, 0);
+			if (pend && *pend == 'x') {
+				nrows = strtol(pend+1, NULL, 0);
+			}
+			if (!nrows || !ncols) {
+				printf("Invalid grid size '%s'\n", optarg);
 				return 1;
 			}
 			break;
@@ -1832,6 +1954,6 @@ main(int argc, char **argv)
 		return 1;
 	}
 
-	vg_opencl_loop(vcp, did, worksize, ncols, invsize);
+	vg_opencl_loop(vcp, did, worksize, nrows, ncols, invsize);
 	return 0;
 }
