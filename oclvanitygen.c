@@ -33,7 +33,7 @@
 #include "pattern.h"
 
 
-const char *version = "0.13";
+const char *version = "0.14";
 const int debug = 0;
 
 #define MAX_SLOT 2
