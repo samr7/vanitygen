@@ -31,7 +31,7 @@
 
 #include "pattern.h"
 
-const char *version = "0.14";
+const char *version = "0.15";
 
 typedef struct _vg_thread_context_s {
 	vg_exec_context_t		base;

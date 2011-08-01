@@ -33,7 +33,7 @@
 #include "pattern.h"
 
 
-const char *version = "0.14";
+const char *version = "0.15";
 const int debug = 0;
 
 #define MAX_SLOT 2
@@ -74,6 +74,7 @@ typedef struct _vg_ocl_context_s {
 	int				voc_ocl_invsize;
 	int				voc_halt;
 	int				voc_rekey;
+	int				voc_dump_done;
 } vg_ocl_context_t;
 
 
@@ -259,6 +260,8 @@ vg_ocl_dump_info(vg_ocl_context_t *vocp)
 	cl_device_id did;
 	if (vocp->base.vxc_vc && (vocp->base.vxc_vc->vc_verbose < 1))
 		return;
+	if (vocp->voc_dump_done)
+		return;
 	did = vocp->voc_ocldid;
 	printf("Device: %s\n",
 	       vg_ocl_device_getstr(did, CL_DEVICE_NAME));
@@ -278,6 +281,7 @@ vg_ocl_dump_info(vg_ocl_context_t *vocp)
 	       vg_ocl_device_getulong(did, CL_DEVICE_GLOBAL_MEM_SIZE));
 	printf("Max allocation: %ld\n",
 	       vg_ocl_device_getulong(did, CL_DEVICE_MAX_MEM_ALLOC_SIZE));
+	vocp->voc_dump_done = 1;
 }
 
 void
@@ -353,6 +357,22 @@ vg_ocl_buildlog(vg_ocl_context_t *vocp, cl_program prog)
 /*
  * OpenCL per-exec functions
  */
+
+int
+vg_ocl_check_driver(vg_ocl_context_t *vocp)
+{
+#ifdef WIN32
+	if (!strcmp(vg_ocl_device_getstr(vocp->voc_ocldid, CL_DEVICE_VENDOR),
+		    "NVIDIA Corporation") &&
+            strcmp(vg_ocl_device_getstr(vocp->voc_ocldid, CL_DRIVER_VERSION),
+                   "270.81")) {
+		printf("WARNING: Known problems with certain NVIDIA driver versions\n");
+		printf("WARNING: Use version 270.81 for best results\n");
+		return 0;
+	}
+#endif
+	return 1;
+}
 
 int
 vg_ocl_create_kernel(vg_ocl_context_t *vocp, int knum, const char *func)
@@ -604,6 +624,15 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did)
 
 	if (vcp->vc_verbose > 1)
 		vg_ocl_dump_info(vocp);
+
+	if (!vg_ocl_check_driver(vocp)) {
+		char yesbuf[16];
+		printf("Type 'yes' to continue: ");
+		fflush(stdout);
+		if (!fgets(yesbuf, sizeof(yesbuf), stdin) ||
+		    strncmp(yesbuf, "yes", 3))
+			exit(1);
+	}
 
 	vocp->voc_oclctx = clCreateContext(NULL,
 					   1, &did,
