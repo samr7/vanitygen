@@ -612,6 +612,7 @@ int
 vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did)
 {
 	cl_int ret;
+	const char *vend, *options;
 
 	memset(vocp, 0, sizeof(*vocp));
 	vg_exec_context_init(vcp, &vocp->base);
@@ -652,10 +653,21 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did)
 		return 0;
 	}
 
-	if (!vg_ocl_load_program(vcp, vocp,
-				 "calc_addrs.cl",
-				 //"-cl-nv-verbose "
-				 "-DUNROLL_MAX=16"))
+	options = "-DUNROLL_MAX=16";
+
+	vend = vg_ocl_device_getstr(did, CL_DEVICE_VENDOR);
+	if (!strcmp(vend, "Advanced Micro Devices, Inc.") ||
+	    !strcmp(vend, "AMD")) {
+		/* Radeons do better with less flow control */
+		options = "-DUNROLL_MAX=16 -DVERY_EXPENSIVE_BRANCHES";
+
+	} else if (!strcmp(vend, "NVIDIA Corporation")) {
+		/* NVIDIA has a handy verbose output option */
+		if (vcp->vc_verbose > 1)
+			options = "-DUNROLL_MAX=16 -cl-nv-verbose";
+	}
+
+	if (!vg_ocl_load_program(vcp, vocp, "calc_addrs.cl", options))
 		return 0;
 	return 1;
 }
