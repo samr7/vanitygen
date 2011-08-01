@@ -748,7 +748,6 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 
 	if (0) {
 	not_possible:
-		printf("Prefix '%s' not possible\n", pfx);
 		ret = -2;
 	}
 
@@ -1487,6 +1486,7 @@ vg_prefix_context_add_patterns(vg_context_t *vcp,
 	BIGNUM *ranges[4];
 	int ret = 0;
 	int i, impossible = 0;
+	int case_impossible;
 	unsigned long npfx;
 	char *dbuf;
 
@@ -1522,11 +1522,17 @@ vg_prefix_context_add_patterns(vg_context_t *vcp,
 				       patterns[i], caseiter.ci_nbits);
 			}
 
+			case_impossible = 0;
 			vp = NULL;
 			do {
 				ret = get_prefix_ranges(vcpp->base.vc_addrtype,
 							caseiter.ci_prefix,
 							ranges, bnctx);
+				if (ret == -2) {
+					case_impossible++;
+					ret = 0;
+					continue;
+				}
 				if (ret)
 					break;
 				vp2 = vg_prefix_add_ranges(&vcpp->vcp_avlroot,
@@ -1542,14 +1548,19 @@ vg_prefix_context_add_patterns(vg_context_t *vcp,
 
 			} while (prefix_case_iter_next(&caseiter));
 
+			if (!vp && case_impossible)
+				ret = -2;
+
 			if (ret && vp) {
 				vg_prefix_delete(&vcpp->vcp_avlroot, vp);
 				vp = NULL;
 			}
 		}
 
-		if (ret == -2)
+		if (ret == -2) {
+			printf("Prefix '%s' not possible\n", patterns[i]);
 			impossible++;
+		}
 
 		if (!vp)
 			continue;
