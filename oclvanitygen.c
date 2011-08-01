@@ -28,7 +28,14 @@
 #include <openssl/rand.h>
 #include <openssl/md5.h>
 
+#ifdef __APPLE__
+#include <OpenCL/cl.h>
+#ifndef CL_CALLBACK
+#define CL_CALLBACK
+#endif
+#else
 #include <CL/cl.h>
+#endif
 
 #include "pattern.h"
 

@@ -1,0 +1,7 @@
+Linux:
+make vanitygen
+make oclvanitygen
+
+OSX:
+make -f Makefile.osx vanitygen
+make -f Makefile.osx vanitygen
