@@ -63,6 +63,7 @@ typedef struct _vg_ocl_context_s {
 	vg_ocl_init_t			voc_init_func;
 	vg_ocl_init_t			voc_rekey_func;
 	vg_ocl_check_t			voc_check_func;
+	int				voc_quirks;
 	int				voc_nslots;
 	cl_kernel			voc_oclkernel[MAX_SLOT][MAX_KERNEL];
 	cl_event			voc_oclkrnwait[MAX_SLOT];
@@ -200,6 +201,21 @@ vg_ocl_device_getplatform(cl_device_id did)
 			      sizeof(val), &val, &size_ret);
 	if (ret != CL_SUCCESS) {
 		printf("clGetDeviceInfo(CL_DEVICE_PLATFORM): %s",
+		       vg_ocl_strerror(ret));
+	}
+	return val;
+}
+
+cl_device_type
+vg_ocl_device_gettype(cl_device_id did)
+{
+	cl_int ret;
+	cl_device_type val;
+	size_t size_ret;
+	ret = clGetDeviceInfo(did, CL_DEVICE_TYPE,
+			      sizeof(val), &val, &size_ret);
+	if (ret != CL_SUCCESS) {
+		printf("clGetDeviceInfo(CL_DEVICE_TYPE): %s",
 		       vg_ocl_strerror(ret));
 	}
 	return val;
@@ -365,20 +381,53 @@ vg_ocl_buildlog(vg_ocl_context_t *vocp, cl_program prog)
  * OpenCL per-exec functions
  */
 
+enum {
+	VG_OCL_UNROLL_LOOPS         = (1 << 0),
+	VG_OCL_EXPENSIVE_BRANCHES   = (1 << 1),
+	VG_OCL_NV_VERBOSE           = (1 << 2),
+	VG_OCL_BROKEN               = (1 << 3),
+	VG_OCL_NO_BINARIES          = (1 << 4),
+
+	VG_OCL_OPTIMIZATIONS        = (VG_OCL_UNROLL_LOOPS |
+				       VG_OCL_EXPENSIVE_BRANCHES),
+
+};
+
 int
-vg_ocl_check_driver(vg_ocl_context_t *vocp)
+vg_ocl_get_quirks(vg_ocl_context_t *vocp)
 {
+	const char *vend;
+	unsigned int quirks = 0;
+
+	/* Loop unrolling for devices other than CPUs */
+	if (!(vg_ocl_device_gettype(vocp->voc_ocldid) & CL_DEVICE_TYPE_CPU))
+		quirks |= VG_OCL_UNROLL_LOOPS;
+
+	vend = vg_ocl_device_getstr(vocp->voc_ocldid, CL_DEVICE_VENDOR);
+	if (!strcmp(vend, "NVIDIA Corporation")) {
+		quirks |= VG_OCL_NV_VERBOSE;
 #ifdef WIN32
-	if (!strcmp(vg_ocl_device_getstr(vocp->voc_ocldid, CL_DEVICE_VENDOR),
-		    "NVIDIA Corporation") &&
-            strcmp(vg_ocl_device_getstr(vocp->voc_ocldid, CL_DRIVER_VERSION),
-                   "270.81")) {
-		printf("WARNING: Known problems with certain NVIDIA driver versions\n");
-		printf("WARNING: Use version 270.81 for best results\n");
-		return 0;
-	}
+		if (strcmp(vg_ocl_device_getstr(vocp->voc_ocldid,
+						CL_DRIVER_VERSION),
+			   "270.81")) {
+			printf("WARNING: Known problems with certain "
+			       "NVIDIA driver versions\n"
+			       "WARNING: Use version 270.81 "
+			       "for best results\n");
+			quirks |= VG_OCL_BROKEN;
+		}
 #endif
-	return 1;
+	} else if (!strcmp(vend, "Advanced Micro Devices, Inc.") ||
+		   !strcmp(vend, "AMD")) {
+		quirks |= VG_OCL_EXPENSIVE_BRANCHES;
+		if (!strcmp(vg_ocl_device_getstr(vocp->voc_ocldid,
+						 CL_DEVICE_NAME),
+			    "ATI RV710")) {
+			quirks &= ~VG_OCL_OPTIMIZATIONS;
+			quirks |= VG_OCL_NO_BINARIES;
+		}
+	}
+	return quirks;
 }
 
 int
@@ -474,7 +523,14 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 		 prog_hash[8], prog_hash[9], prog_hash[10], prog_hash[11],
 		 prog_hash[12], prog_hash[13], prog_hash[14], prog_hash[15]);
 
-	kfp = fopen(bin_name, "rb");
+	if (vocp->voc_quirks & VG_OCL_NO_BINARIES) {
+		kfp = NULL;
+		if (vcp->vc_verbose > 1)
+			printf("Binary OpenCL programs disabled\n");
+	} else {
+		kfp = fopen(bin_name, "rb");
+	}
+
 	if (!kfp) {
 		/* No binary available, create with source */
 		fromsource = 1;
@@ -483,6 +539,8 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 						 1, (const char **) &buf, &sz,
 						 &ret);
 	} else {
+		if (vcp->vc_verbose > 1)
+			printf("Loading kernel binary %s\n", bin_name);
 		szr = 0;
 		while (!feof(kfp)) {
 			len = fread(buf + szr, 1, sz - szr, kfp);
@@ -528,8 +586,6 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 			printf("Compiling kernel...");
 			fflush(stdout);
 		}
-		else if (vcp->vc_verbose > 1)
-			printf("Loading kernel binary %s\n", bin_name);
 	}
 	ret = clBuildProgram(prog, 1, &vocp->voc_ocldid, opts, NULL, NULL);
 	if (ret != CL_SUCCESS) {
@@ -548,7 +604,7 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 		return 0;
 	}
 
-	if (fromsource) {
+	if (fromsource && !(vocp->voc_quirks & VG_OCL_NO_BINARIES)) {
 		ret = clGetProgramInfo(prog,
 				       CL_PROGRAM_BINARY_SIZES,
 				       sizeof(szr), &szr,
@@ -591,8 +647,9 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 			fclose(kfp);
 			if (sz != szr) {
 				printf("WARNING: short write on CL kernel "
-				       "binary file: %s\n",
-				       strerror(errno));
+				       "binary file: expected "
+				       "%"PRSIZET"d, got %"PRSIZET"d\n",
+				       szr, sz);
 				unlink(bin_name);
 			}
 		}
@@ -625,7 +682,8 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did,
 	    int safe_mode)
 {
 	cl_int ret;
-	const char *vend, *options;
+	char optbuf[128];
+	int end = 0;
 
 	memset(vocp, 0, sizeof(*vocp));
 	vg_exec_context_init(vcp, &vocp->base);
@@ -639,7 +697,9 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did,
 	if (vcp->vc_verbose > 1)
 		vg_ocl_dump_info(vocp);
 
-	if (!vg_ocl_check_driver(vocp) && (vcp->vc_verbose > 0)) {
+	vocp->voc_quirks = vg_ocl_get_quirks(vocp);
+
+	if ((vocp->voc_quirks & VG_OCL_BROKEN) && (vcp->vc_verbose > 0)) {
 		char yesbuf[16];
 		printf("Type 'yes' to continue: ");
 		fflush(stdout);
@@ -666,24 +726,22 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did,
 		return 0;
 	}
 
-	options = "-DUNROLL_MAX=16";
-	vend = vg_ocl_device_getstr(did, CL_DEVICE_VENDOR);
+	if (safe_mode)
+		vocp->voc_quirks &= ~VG_OCL_OPTIMIZATIONS;
 
-	if (safe_mode) {
-		options = NULL;
+	end = 0;
+	optbuf[end] = '\0';
+	if (vocp->voc_quirks & VG_OCL_UNROLL_LOOPS)
+		end += snprintf(optbuf + end, sizeof(optbuf) - end,
+				"-DUNROLL_MAX=16 ");
+	if (vocp->voc_quirks & VG_OCL_EXPENSIVE_BRANCHES)
+		end += snprintf(optbuf + end, sizeof(optbuf) - end,
+				"-DVERY_EXPENSIVE_BRANCHES ");
+	if (vocp->voc_quirks & VG_OCL_NV_VERBOSE)
+		end += snprintf(optbuf + end, sizeof(optbuf) - end,
+				"-cl-nv-verbose ");
 
-	} else if (!strcmp(vend, "Advanced Micro Devices, Inc.") ||
-	    !strcmp(vend, "AMD")) {
-		/* Radeons do better with less flow control */
-		options = "-DUNROLL_MAX=16 -DVERY_EXPENSIVE_BRANCHES";
-
-	} else if (!strcmp(vend, "NVIDIA Corporation")) {
-		/* NVIDIA has a handy verbose output option */
-		if (vcp->vc_verbose > 1)
-			options = "-DUNROLL_MAX=16 -cl-nv-verbose";
-	}
-
-	if (!vg_ocl_load_program(vcp, vocp, "calc_addrs.cl", options))
+	if (!vg_ocl_load_program(vcp, vocp, "calc_addrs.cl", optbuf))
 		return 0;
 	return 1;
 }
@@ -1246,7 +1304,7 @@ vg_ocl_config_pattern(vg_ocl_context_t *vocp)
 	i = vg_context_hash160_sort(vcp, NULL);
 	if (i > 0) {
 		if (vcp->vc_verbose > 1)
-			printf("Using GPU prefix matcher\n");
+			printf("Using OpenCL prefix matcher\n");
 		/* Configure for prefix matching */
 		return vg_ocl_prefix_init(vocp);
 	}
@@ -1412,12 +1470,15 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
 			nrows <<= 1;
 		}
 		/* Increase row & column counts to saturate device memory */
-		while (((ncols * nrows * 2 * 128) < memsize) &&
-		       ((ncols * nrows * 2 * 64) < allocsize)) {
-			if (ncols > nrows)
-				nrows *= 2;
-			else
-				ncols *= 2;
+		if (!(vg_ocl_device_gettype(vocp->voc_ocldid) &
+		      CL_DEVICE_TYPE_CPU)) {
+			while (((ncols * nrows * 2 * 128) < memsize) &&
+			       ((ncols * nrows * 2 * 64) < allocsize)) {
+				if (ncols > nrows)
+					nrows *= 2;
+				else
+					ncols *= 2;
+			}
 		}
 	}
 
