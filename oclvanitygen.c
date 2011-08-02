@@ -1953,6 +1953,7 @@ usage(const char *name)
 "-k            Keep pattern and continue search after finding a match\n"
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
+"-X <version>  Generate address with the given version\n"
 "-p <platform> Select OpenCL platform\n"
 "-d <device>   Select OpenCL device\n"
 "-w <worksize> Set target thread count per multiprocessor\n"
@@ -1987,7 +1988,7 @@ main(int argc, char **argv)
 	cl_device_id did;
 	const char *result_file = NULL;
 
-	while ((opt = getopt(argc, argv, "vqrikNTp:d:w:g:b:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqrikNTX:p:d:w:g:b:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -2011,6 +2012,10 @@ main(int argc, char **argv)
 		case 'T':
 			addrtype = 111;
 			privtype = 239;
+			break;
+		case 'X':
+			addrtype = atoi(optarg);
+			privtype = 128 + addrtype;
 			break;
 		case 'p':
 			platformidx = atoi(optarg);
