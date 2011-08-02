@@ -422,8 +422,10 @@ vg_ocl_hash_program(vg_ocl_context_t *vocp, const char *opts,
 	MD5_Update(&ctx, str, strlen(str) + 1);
 	str = vg_ocl_device_getstr(vocp->voc_ocldid, CL_DEVICE_NAME);
 	MD5_Update(&ctx, str, strlen(str) + 1);
-	MD5_Update(&ctx, opts, strlen(opts) + 1);
-	MD5_Update(&ctx, program, size);
+	if (opts)
+		MD5_Update(&ctx, opts, strlen(opts) + 1);
+	if (size)
+		MD5_Update(&ctx, program, size);
 	MD5_Final(hash_out, &ctx);
 }
 
@@ -616,9 +618,11 @@ vg_ocl_context_callback(const char *errinfo,
 }
 
 int
-vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did)
+vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did,
+	    int safe_mode)
 {
 	cl_int ret;
+	const char *vend, *options;
 
 	memset(vocp, 0, sizeof(*vocp));
 	vg_exec_context_init(vcp, &vocp->base);
@@ -632,7 +636,7 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did)
 	if (vcp->vc_verbose > 1)
 		vg_ocl_dump_info(vocp);
 
-	if (!vg_ocl_check_driver(vocp)) {
+	if (!vg_ocl_check_driver(vocp) && (vcp->vc_verbose > 0)) {
 		char yesbuf[16];
 		printf("Type 'yes' to continue: ");
 		fflush(stdout);
@@ -659,10 +663,24 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did)
 		return 0;
 	}
 
-	if (!vg_ocl_load_program(vcp, vocp,
-				 "calc_addrs.cl",
-				 //"-cl-nv-verbose "
-				 "-DUNROLL_MAX=16"))
+	options = "-DUNROLL_MAX=16";
+	vend = vg_ocl_device_getstr(did, CL_DEVICE_VENDOR);
+
+	if (safe_mode) {
+		options = NULL;
+
+	} else if (!strcmp(vend, "Advanced Micro Devices, Inc.") ||
+	    !strcmp(vend, "AMD")) {
+		/* Radeons do better with less flow control */
+		options = "-DUNROLL_MAX=16 -DVERY_EXPENSIVE_BRANCHES";
+
+	} else if (!strcmp(vend, "NVIDIA Corporation")) {
+		/* NVIDIA has a handy verbose output option */
+		if (vcp->vc_verbose > 1)
+			options = "-DUNROLL_MAX=16 -cl-nv-verbose";
+	}
+
+	if (!vg_ocl_load_program(vcp, vocp, "calc_addrs.cl", options))
 		return 0;
 	return 1;
 }
@@ -1323,8 +1341,8 @@ out:
  */
 
 void *
-vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize,
-	       int nrows, int ncols, int invsize)
+vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
+	       int worksize, int nrows, int ncols, int invsize)
 {
 	int i;
 	int round, full_worksize;
@@ -1351,7 +1369,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int worksize,
 
 	struct timeval tvstart;
 
-	if (!vg_ocl_init(vcp, &ctx, did))
+	if (!vg_ocl_init(vcp, &ctx, did, safe_mode))
 		return NULL;
 
 	pkey = vxcp->vxc_key;
@@ -1941,6 +1959,7 @@ usage(const char *name)
 "-k            Keep pattern and continue search after finding a match\n"
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
+"-X <version>  Generate address with the given version\n"
 "-p <platform> Select OpenCL platform\n"
 "-d <device>   Select OpenCL device\n"
 "-w <worksize> Set target thread count per multiprocessor\n"
@@ -1971,11 +1990,13 @@ main(int argc, char **argv)
 	int nrows = 0, ncols = 0;
 	int invsize = 0;
 	int remove_on_match = 1;
+	int safe_mode = 0;
 	vg_context_t *vcp = NULL;
 	cl_device_id did;
 	const char *result_file = NULL;
 
-	while ((opt = getopt(argc, argv, "vqrikNTp:d:w:g:b:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv,
+			     "vqrikNTX:p:d:w:g:b:Sh?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -1999,6 +2020,10 @@ main(int argc, char **argv)
 		case 'T':
 			addrtype = 111;
 			privtype = 239;
+			break;
+		case 'X':
+			addrtype = atoi(optarg);
+			privtype = 128 + addrtype;
 			break;
 		case 'p':
 			platformidx = atoi(optarg);
@@ -2036,6 +2061,9 @@ main(int argc, char **argv)
 				       "a power of 2\n");
 				return 1;
 			}
+			break;
+		case 'S':
+			safe_mode = 1;
 			break;
 		case 'f':
 			if (fp) {
@@ -2149,6 +2177,7 @@ main(int argc, char **argv)
 		return 1;
 	}
 
-	vg_opencl_loop(vcp, did, worksize, nrows, ncols, invsize);
+	vg_opencl_loop(vcp, did, safe_mode,
+		       worksize, nrows, ncols, invsize);
 	return 0;
 }

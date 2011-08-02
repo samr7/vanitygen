@@ -447,6 +447,7 @@ usage(const char *name)
 "-k            Keep pattern and continue search after finding a match\n"
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
+"-X <version>  Generate address with the given version\n"
 "-t <threads>  Set number of worker threads (Default: number of CPUs)\n"
 "-f <file>     File containing list of patterns, one per line\n"
 "              (Use \"-\" as the file name for stdin)\n"
@@ -473,7 +474,7 @@ main(int argc, char **argv)
 	int nthreads = 0;
 	vg_context_t *vcp = NULL;
 
-	while ((opt = getopt(argc, argv, "vqrikNTt:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqrikNTX:t:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -497,6 +498,10 @@ main(int argc, char **argv)
 		case 'T':
 			addrtype = 111;
 			privtype = 239;
+			break;
+		case 'X':
+			addrtype = atoi(optarg);
+			privtype = 128 + addrtype;
 			break;
 		case 't':
 			nthreads = atoi(optarg);

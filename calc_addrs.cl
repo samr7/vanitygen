@@ -154,37 +154,52 @@ bn_rshift1(bignum *bn)
 	bn->d[i] >>= 1;
 }
 
+void
+bn_rshift1_2(bignum *bna, bignum *bnb)
+{
+	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < (BN_NWORDS - 1); i++) {
+		bna->d[i] = (bna->d[i+1] << 31) | (bna->d[i] >> 1);
+		bnb->d[i] = (bnb->d[i+1] << 31) | (bnb->d[i] >> 1);
+	}
+	bna->d[i] >>= 1;
+	bnb->d[i] >>= 1;
+}
+
 
 /*
  * Unsigned comparison
  */
 
 int
-bn_ucmp(bignum *a, bignum *b)
+bn_ucmp_ge(bignum *a, bignum *b)
 {
-	int i;
+	int i, l = 0, g = 0;
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
 	for (i = (BN_NWORDS - 1); i >= 0; i--) {
-		if (a->d[i] < b->d[i]) return -1;
-		if (a->d[i] > b->d[i]) return 1;
+		if (a->d[i] < b->d[i]) l |= (1 << i);
+		if (a->d[i] > b->d[i]) g |= (1 << i);
 	}
-	return 0;
+	return (l > g) ? 0 : 1;
 }
 
 int
-bn_ucmp_c(bignum *a, __constant bn_word *b)
+bn_ucmp_ge_c(bignum *a, __constant bn_word *b)
 {
-	int i;
+	int i, l = 0, g = 0;
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
 	for (i = (BN_NWORDS - 1); i >= 0; i--) {
-		if (a->d[i] < b[i]) return -1;
-		if (a->d[i] > b[i]) return 1;
+		if (a->d[i] < b[i]) l |= (1 << i);
+		if (a->d[i] > b[i]) g |= (1 << i);
 	}
-	return 0;
+	return (l > g) ? 0 : 1;
 }
 
 /*
@@ -295,7 +310,7 @@ void
 bn_mod_add(bignum *r, bignum *a, bignum *b)
 {
 	if (bn_uadd(r, a, b) ||
-	    (bn_ucmp_c(r, modulus) >= 0))
+	    (bn_ucmp_ge_c(r, modulus)))
 		bn_usub_c(r, r, modulus);
 }
 
@@ -311,7 +326,7 @@ bn_mod_lshift1(bignum *bn)
 {
 	bn_word c = (bn->d[BN_NWORDS-1] & 0x80000000);
 	bn_lshift1(bn);
-	if (c || (bn_ucmp_c(bn, modulus) >= 0))
+	if (c || (bn_ucmp_ge_c(bn, modulus)))
 		bn_usub_c(bn, bn, modulus);
 }
 
@@ -323,14 +338,14 @@ bn_mod_lshift1(bignum *bn)
  */
 
 #define bn_mul_word(r, a, w, c, p, s) do { \
-		p = mul_hi(a, w);	   \
 		r = (a * w) + c;	   \
+		p = mul_hi(a, w);	   \
 		c = (r < c) ? p + 1 : p;   \
 	} while (0)
 
 #define bn_mul_add_word(r, a, w, c, p, s) do {	\
-		p = mul_hi(a, w);		\
 		s = r + c;			\
+		p = mul_hi(a, w);		\
 		r = (a * w) + s;		\
 		c = (s < c) ? p + 1 : p;	\
 		if (r < s) c++;			\
@@ -365,6 +380,9 @@ bn_mul_mont(bignum *r, bignum *a, bignum *b)
 	t.d[BN_NWORDS-1] = tea + c;
 	tea = teb + ((t.d[BN_NWORDS-1] < c) ? 1 : 0);
 
+#if defined(UNROLL_MAX) && defined(VERY_EXPENSIVE_BRANCHES)
+#pragma unroll UNROLL_MAX
+#endif
 	for (i = 1; i < BN_NWORDS; i++) {
 		c = 0;
 #ifdef UNROLL_MAX
@@ -389,12 +407,19 @@ bn_mul_mont(bignum *r, bignum *a, bignum *b)
 		tea = teb + ((t.d[BN_NWORDS-1] < c) ? 1 : 0);
 	}
 
-	if (tea || (t.d[BN_NWORDS-1] >= modulus[7])) {
-		c = bn_usub_c(r, &t, modulus);
-		if (tea || !c)
+#if defined(VERY_EXPENSIVE_BRANCHES)
+	c = tea | !bn_usub_c(r, &t, modulus);
+	if (!c)
+		*r = t;
+#else
+	c = tea || (t.d[BN_NWORDS-1] >= modulus[BN_NWORDS-1]);
+	if (c) {
+		c = tea | !bn_usub_c(r, &t, modulus);
+		if (c)
 			return;
 	}
 	*r = t;
+#endif
 }
 
 void
@@ -478,30 +503,23 @@ bn_mod_inverse(bignum *r, bignum *n)
 	yc = 0;
 	while (!bn_is_zero(b)) {
 		shift = 0;
-		while (!bn_is_bit_set(b, shift)) {
-			shift++;
+		while (!bn_is_odd(b)) {
 			if (bn_is_odd(x))
 				xc += bn_uadd_c(&x, &x, modulus);
-			bn_rshift1(&x);
+			bn_rshift1_2(&x, &b);
 			x.d[7] |= (xc << 31);
 			xc >>= 1;
 		}
-		if (shift)
-			bn_rshift(&b, shift);
 
-		shift = 0;
-		while (!bn_is_bit_set(a, shift)) {
-			shift++;
+		while (!bn_is_odd(a)) {
 			if (bn_is_odd(y))
 				yc += bn_uadd_c(&y, &y, modulus);
-			bn_rshift1(&y);
+			bn_rshift1_2(&y, &a);
 			y.d[7] |= (yc << 31);
 			yc >>= 1;
 		}
-		if (shift)
-			bn_rshift(&a, shift);
 
-		if (bn_ucmp(&b, &a) >= 0) {
+		if (bn_ucmp_ge(&b, &a)) {
 			xc += yc + bn_uadd(&x, &x, &y);
 			bn_usub(&b, &b, &a);
 		} else {
@@ -1106,14 +1124,16 @@ heap_invert(__global bn_word *z_heap, int batch)
 	bn_mul_mont(&z, &z, &a);
 	bn_mul_mont(&z, &z, &a);
 
+	lcell = (off * 2 * (batch - 2)) + get_global_id(0);
+	hcell = lcell + (off << 1);
+	start = (((hcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+		 (hcell % ACCESS_STRIDE));
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
 	for (j = 0; j < BN_NWORDS; j++)
 		z_heap[start + j*ACCESS_STRIDE] = z.d[j];
 
-	lcell = (off * 2 * (batch - 2)) + get_global_id(0);
-	hcell = lcell + (off << 1);
 	for (i = 0; i < (batch-1); i++) {
 		start = (((hcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 			 (hcell % ACCESS_STRIDE));
