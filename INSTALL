@@ -1,7 +1,25 @@
 Linux:
-make vanitygen
-make oclvanitygen
+make vanitygen oclvanitygen
 
 OSX:
-make -f Makefile.osx vanitygen
-make -f Makefile.osx vanitygen
+make -f Makefile.osx vanitygen oclvanitygen
+
+Windows:
+Tools: Microsoft Visual Studio 2010, Visual C++
+Prerequisites:
+  - OpenSSL 1.0.0d: http://www.slproweb.com/products/Win32OpenSSL.html
+  - pthreads-Win32: http://sourceware.org/pthreads-win32/
+  - PCRE: http://www.psyon.org/projects/pcre-win32/
+  - AMD APP SDK -or- NVIDIA CUDA SDK
+
+Once you have set up these components, edit the Makefile.Win32 to 
+include the paths where these components are located.
+
+Note that pthreads and PCRE may be built as static libraries or DLLs.  
+The default Makefile includes CFLAGS to link the static versions of 
+those libraries.  If you want to link against DLLs, make sure to change 
+the CFLAGS.
+
+Then, open a Visual Studio command prompt window, and run:
+
+nmake /fMakefile.Win32 vanitygen.exe oclvanitygen.exe

@@ -57,3 +57,15 @@ Version 0.12, released July 13 2011:
 Version 0.13, released July 17 2011:
 	- Display hints when handling impossible prefixes
 	- Reorganize source tree
+
+Version 0.14, released July 31 2011:
+	- Fix namecoin private address type (patch from jackjack-jj)
+
+Version 0.15, released August 1 2011:
+	- Tweaks/improvements to oclvanitygen
+	- Add oclvanitygen warning for NVIDIA Windows drivers not known to work
+
+Version 0.16, released August 2 2011:
+	- Performance tweaks to oclvanitygen kernel
+	- Add safe mode flag (-S) to oclvanitygen to disable optimizations
+	- Add -X flag to set numerical key type (patch from jackjack-jj)

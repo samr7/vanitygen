@@ -40,7 +40,7 @@
 #include "pattern.h"
 
 
-const char *version = "0.15";
+const char *version = "0.16";
 const int debug = 0;
 
 #define MAX_SLOT 2
@@ -474,7 +474,7 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 		 prog_hash[8], prog_hash[9], prog_hash[10], prog_hash[11],
 		 prog_hash[12], prog_hash[13], prog_hash[14], prog_hash[15]);
 
-	kfp = fopen(bin_name, "r");
+	kfp = fopen(bin_name, "rb");
 	if (!kfp) {
 		/* No binary available, create with source */
 		fromsource = 1;
@@ -519,6 +519,9 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 		vg_ocl_error(vocp, ret, "clCreateProgramWithSource");
 		return 0;
 	}
+
+	if (vcp->vc_verbose > 1)
+		printf("OpenCL compiler flags: %s\n", opts ? opts : "");
 
 	if (vcp->vc_verbose > 0) {
 		if (fromsource) {
@@ -579,7 +582,7 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 			goto out;
 		}
 
-		kfp = fopen(bin_name, "w");
+		kfp = fopen(bin_name, "wb");
 		if (!kfp) {
 			printf("WARNING: could not save CL kernel binary: %s\n",
 			       strerror(errno));
@@ -1943,7 +1946,7 @@ usage(const char *name)
 {
 	printf(
 "oclVanitygen %s (" OPENSSL_VERSION_TEXT ")\n"
-"Usage: %s [-vqrikNT] [-t <threads>] [-f <filename>|-] [<pattern>...]\n"
+"Usage: %s [-vqrikNTS] [-d <device>] [-f <filename>|-] [<pattern>...]\n"
 "Generates a bitcoin receiving address matching <pattern>, and outputs the\n"
 "address and associated private key.  The private key may be stored in a safe\n"
 "location or imported into a bitcoin client to spend any balance received on\n"
@@ -1962,6 +1965,7 @@ usage(const char *name)
 "-X <version>  Generate address with the given version\n"
 "-p <platform> Select OpenCL platform\n"
 "-d <device>   Select OpenCL device\n"
+"-S            Safe mode, disable OpenCL loop unrolling optimizations\n"
 "-w <worksize> Set target thread count per multiprocessor\n"
 "-g <x>x<y>    Set grid size\n"
 "-b <invsize>  Set modular inverse ops per thread\n"
