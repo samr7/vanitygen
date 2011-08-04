@@ -234,7 +234,7 @@ bn_neg(bignum *n)
 	} while (0)
 
 bn_word
-bn_uadd(bignum *r, bignum *a, bignum *b)
+bn_uadd_seq(bignum *r, bignum *a, bignum *b)
 {
 	bn_word t, c = 0;
 	int i;
@@ -248,7 +248,7 @@ bn_uadd(bignum *r, bignum *a, bignum *b)
 }
 
 bn_word
-bn_uadd_c(bignum *r, bignum *a, __constant bn_word *b)
+bn_uadd_c_seq(bignum *r, bignum *a, __constant bn_word *b)
 {
 	bn_word t, c = 0;
 	int i;
@@ -275,7 +275,7 @@ bn_uadd_c(bignum *r, bignum *a, __constant bn_word *b)
 	} while (0)
 
 bn_word
-bn_usub(bignum *r, bignum *a, bignum *b)
+bn_usub_seq(bignum *r, bignum *a, bignum *b)
 {
 	bn_word t, c = 0;
 	int i;
@@ -289,7 +289,7 @@ bn_usub(bignum *r, bignum *a, bignum *b)
 }
 
 bn_word
-bn_usub_c(bignum *r, bignum *a, __constant bn_word *b)
+bn_usub_c_seq(bignum *r, bignum *a, __constant bn_word *b)
 {
 	bn_word t, c = 0;
 	int i;
@@ -301,6 +301,135 @@ bn_usub_c(bignum *r, bignum *a, __constant bn_word *b)
 		bn_subb_word(r->d[i], a->d[i], b[i], t, c);
 	return c;
 }
+
+/*
+ * Add/subtract better suited for AMD's VLIW architecture
+ */
+bn_word
+bn_uadd_vliw(bignum *r, bignum *a, bignum *b)
+{
+	bignum x;
+	bn_word c = 0, cp = 0;
+	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < BN_NWORDS; i++)
+		x.d[i] = a->d[i] + b->d[i];
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < BN_NWORDS; i++) {
+		c |= (a->d[i] > x.d[i]) ? (1 << i) : 0;
+		cp |= (!~x.d[i]) ? (1 << i) : 0;
+	}
+	c = ((cp + (c << 1)) & ~cp);
+	r->d[0] = x.d[0];
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 1; i < BN_NWORDS; i++)
+		r->d[i] = x.d[i] + ((c >> i) & 1);
+	return c >> BN_NWORDS;
+}
+
+bn_word
+bn_uadd_c_vliw(bignum *r, bignum *a, __constant bn_word *b)
+{
+	bignum x;
+	bn_word c = 0, cp = 0;
+	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < BN_NWORDS; i++)
+		x.d[i] = a->d[i] + b[i];
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < BN_NWORDS; i++) {
+		c |= (b[i] > x.d[i]) ? (1 << i) : 0;
+		cp |= (!~x.d[i]) ? (1 << i) : 0;
+	}
+	c = ((cp + (c << 1)) & ~cp);
+	r->d[0] = x.d[0];
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 1; i < BN_NWORDS; i++)
+		r->d[i] = x.d[i] + ((c >> i) & 1);
+	return c >> BN_NWORDS;
+}
+
+bn_word
+bn_usub_vliw(bignum *r, bignum *a, bignum *b)
+{
+	bignum x;
+	bn_word c = 0, cp = 0;
+	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < BN_NWORDS; i++)
+		x.d[i] = a->d[i] - b->d[i];
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < BN_NWORDS; i++) {
+		c |= (a->d[i] < b->d[i]) ? (1 << i) : 0;
+		cp |= (!x.d[i]) ? (1 << i) : 0;
+	}
+	c = ((cp + (c << 1)) & ~cp);
+	r->d[0] = x.d[0];
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 1; i < BN_NWORDS; i++)
+		r->d[i] = x.d[i] - ((c >> i) & 1);
+	return c >> BN_NWORDS;
+}
+
+bn_word
+bn_usub_c_vliw(bignum *r, bignum *a, __constant bn_word *b)
+{
+	bignum x;
+	bn_word c = 0, cp = 0;
+	int i;
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < BN_NWORDS; i++)
+		x.d[i] = a->d[i] - b[i];
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 0; i < BN_NWORDS; i++) {
+		c |= (a->d[i] < b[i]) ? (1 << i) : 0;
+		cp |= (!x.d[i]) ? (1 << i) : 0;
+	}
+	c = ((cp + (c << 1)) & ~cp);
+	r->d[0] = x.d[0];
+#ifdef UNROLL_MAX
+#pragma unroll UNROLL_MAX
+#endif
+	for (i = 1; i < BN_NWORDS; i++)
+		r->d[i] = x.d[i] - ((c >> i) & 1);
+	return c >> BN_NWORDS;
+}
+
+
+#if defined(DEEP_VLIW)
+#define bn_uadd bn_uadd_vliw
+#define bn_uadd_c bn_uadd_c_vliw
+#define bn_usub bn_usub_vliw
+#define bn_usub_c bn_usub_c_vliw
+#else
+#define bn_uadd bn_uadd_seq
+#define bn_uadd_c bn_uadd_c_seq
+#define bn_usub bn_usub_seq
+#define bn_usub_c bn_usub_c_seq
+#endif
+
 
 /*
  * Modular add/sub

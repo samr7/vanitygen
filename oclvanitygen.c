@@ -384,12 +384,14 @@ vg_ocl_buildlog(vg_ocl_context_t *vocp, cl_program prog)
 enum {
 	VG_OCL_UNROLL_LOOPS         = (1 << 0),
 	VG_OCL_EXPENSIVE_BRANCHES   = (1 << 1),
-	VG_OCL_NV_VERBOSE           = (1 << 2),
-	VG_OCL_BROKEN               = (1 << 3),
-	VG_OCL_NO_BINARIES          = (1 << 4),
+	VG_OCL_DEEP_VLIW            = (1 << 2),
+	VG_OCL_NV_VERBOSE           = (1 << 3),
+	VG_OCL_BROKEN               = (1 << 4),
+	VG_OCL_NO_BINARIES          = (1 << 5),
 
 	VG_OCL_OPTIMIZATIONS        = (VG_OCL_UNROLL_LOOPS |
-				       VG_OCL_EXPENSIVE_BRANCHES),
+				       VG_OCL_EXPENSIVE_BRANCHES |
+				       VG_OCL_DEEP_VLIW),
 
 };
 
@@ -404,7 +406,8 @@ vg_ocl_get_quirks(vg_ocl_context_t *vocp)
 		quirks |= VG_OCL_UNROLL_LOOPS;
 
 	vend = vg_ocl_device_getstr(vocp->voc_ocldid, CL_DEVICE_VENDOR);
-	if (!strcmp(vend, "NVIDIA Corporation")) {
+	if (!strcmp(vend, "NVIDIA Corporation") ||
+	    !strcmp(vend, "NVIDIA")) {
 		quirks |= VG_OCL_NV_VERBOSE;
 #ifdef WIN32
 		if (strcmp(vg_ocl_device_getstr(vocp->voc_ocldid,
@@ -420,9 +423,9 @@ vg_ocl_get_quirks(vg_ocl_context_t *vocp)
 	} else if (!strcmp(vend, "Advanced Micro Devices, Inc.") ||
 		   !strcmp(vend, "AMD")) {
 		quirks |= VG_OCL_EXPENSIVE_BRANCHES;
-		if (!strcmp(vg_ocl_device_getstr(vocp->voc_ocldid,
-						 CL_DEVICE_NAME),
-			    "ATI RV710")) {
+		quirks |= VG_OCL_DEEP_VLIW;
+		vend = vg_ocl_device_getstr(vocp->voc_ocldid, CL_DEVICE_NAME);
+		if (!strcmp(vend, "ATI RV710")) {
 			quirks &= ~VG_OCL_OPTIMIZATIONS;
 			quirks |= VG_OCL_NO_BINARIES;
 		}
@@ -737,6 +740,9 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did,
 	if (vocp->voc_quirks & VG_OCL_EXPENSIVE_BRANCHES)
 		end += snprintf(optbuf + end, sizeof(optbuf) - end,
 				"-DVERY_EXPENSIVE_BRANCHES ");
+	if (vocp->voc_quirks & VG_OCL_DEEP_VLIW)
+		end += snprintf(optbuf + end, sizeof(optbuf) - end,
+				"-DDEEP_VLIW ");
 	if (vocp->voc_quirks & VG_OCL_NV_VERBOSE)
 		end += snprintf(optbuf + end, sizeof(optbuf) - end,
 				"-cl-nv-verbose ");
