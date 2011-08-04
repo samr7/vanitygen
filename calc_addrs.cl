@@ -726,12 +726,22 @@ sha2_256_init(uint *out)
 
 /* The state variable remapping is really contorted */
 #define sha2_stvar(vals, i, v) vals[(64+v-i) % 8]
+#define sha2_s0(a) (rotate(a, 30U) ^ rotate(a, 19U) ^ rotate(a, 10U))
+#define sha2_s1(a) (rotate(a, 26U) ^ rotate(a, 21U) ^ rotate(a, 7U))
+#if defined(AMD_BFI_INT)
+#pragma OPENCL EXTENSION cl_amd_media_ops : enable
+#define sha2_ch(a, b, c) amd_bytealign(a, b, c)
+#define sha2_ma(a, b, c) amd_bytealign((a^c), b, a)
+#else
+#define sha2_ch(a, b, c) (c ^ (a & (b ^ c)))
+#define sha2_ma(a, b, c) ((a & c) | (b & (a | c)))
+#endif
 
 void
 sha2_256_block(uint *out, uint *in)
 {
 	int i;
-	uint state[8], s0, s1, t1, t2;
+	uint state[8], t1, t2;
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
@@ -751,18 +761,17 @@ sha2_256_block(uint *out, uint *in)
 		}
 
 		/* Compute the t1, t2 augmentations */
-		t1 = sha2_stvar(state, i, 4);
-		t2 = sha2_stvar(state, i, 0);
-		s0 = (rotate(t2, 30U) ^ rotate(t2, 19U) ^ rotate(t2, 10U));
-		s1 = (rotate(t1, 26U) ^ rotate(t1, 21U) ^ rotate(t1, 7U));
-
-		t1 = (sha2_stvar(state, i, 7) + s1 + sha2_k[i] + in[i % 16] +
-		      ((t1 & sha2_stvar(state, i, 5)) ^
-		       (~t1 & sha2_stvar(state, i, 6))));
-		t2 = s0 + ((t2 & sha2_stvar(state, i, 1)) ^
-			   (t2 & sha2_stvar(state, i, 2)) ^
-			   (sha2_stvar(state, i, 1) & sha2_stvar(state, i, 2)));
-
+		t1 = (sha2_stvar(state, i, 7) +
+		      sha2_s1(sha2_stvar(state, i, 4)) +
+		      sha2_ch(sha2_stvar(state, i, 4),
+			      sha2_stvar(state, i, 5),
+			      sha2_stvar(state, i, 6)) +
+		      sha2_k[i] +
+		      in[i % 16]);
+		t2 = (sha2_s0(sha2_stvar(state, i, 0)) +
+		      sha2_ma(sha2_stvar(state, i, 0),
+			      sha2_stvar(state, i, 1),
+			      sha2_stvar(state, i, 2)));
 		sha2_stvar(state, i, 3) += t1;
 		sha2_stvar(state, i, 7) = t1 + t2;
 	}
@@ -817,11 +826,19 @@ __constant uchar ripemd160_rlp[] = {
 
 #define ripemd160_val(v, i, n) (v)[(80+(n)-(i)) % 5]
 #define ripemd160_valp(v, i, n) (v)[5 + ((80+(n)-(i)) % 5)]
+#if defined(AMD_BFI_INT)
+#define ripemd160_f0(x, y, z) (x ^ y ^ z)
+#define ripemd160_f1(x, y, z) amd_bytealign(x, y, z)
+#define ripemd160_f2(x, y, z) (z ^ (x | ~y))
+#define ripemd160_f3(x, y, z) amd_bytealign(z, x, y)
+#define ripemd160_f4(x, y, z) (x ^ (y | ~z))
+#else
 #define ripemd160_f0(x, y, z) (x ^ y ^ z)
 #define ripemd160_f1(x, y, z) ((x & y) | (~x & z))
-#define ripemd160_f2(x, y, z) ((x | ~y) ^ z)
+#define ripemd160_f2(x, y, z) (z ^ (x | ~y))
 #define ripemd160_f3(x, y, z) ((x & z) | (y & ~z))
 #define ripemd160_f4(x, y, z) (x ^ (y | ~z))
+#endif
 #define ripemd160_round(i, in, vals, f, fp, t) do {			\
 		ripemd160_val(vals, i, 0) =				\
 			rotate(ripemd160_val(vals, i, 0) +		\

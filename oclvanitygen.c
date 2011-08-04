@@ -264,11 +264,11 @@ vg_ocl_device_getulong(cl_device_id did, cl_device_info param)
 	return val;
 }
 
-size_t
+cl_uint
 vg_ocl_device_getuint(cl_device_id did, cl_device_info param)
 {
 	cl_int ret;
-	size_t val;
+        cl_uint val;
 	size_t size_ret;
 	ret = clGetDeviceInfo(did, param, sizeof(val), &val, &size_ret);
 	if (ret != CL_SUCCESS) {
@@ -288,8 +288,9 @@ vg_ocl_dump_info(vg_ocl_context_t *vocp)
 	did = vocp->voc_ocldid;
 	printf("Device: %s\n",
 	       vg_ocl_device_getstr(did, CL_DEVICE_NAME));
-	printf("Vendor: %s\n",
-	       vg_ocl_device_getstr(did, CL_DEVICE_VENDOR));
+	printf("Vendor: %s (%04x)\n",
+	       vg_ocl_device_getstr(did, CL_DEVICE_VENDOR),
+	       vg_ocl_device_getuint(did, CL_DEVICE_VENDOR_ID));
 	printf("Driver: %s\n",
 	       vg_ocl_device_getstr(did, CL_DRIVER_VERSION));
 	printf("Profile: %s\n",
@@ -385,29 +386,32 @@ enum {
 	VG_OCL_UNROLL_LOOPS         = (1 << 0),
 	VG_OCL_EXPENSIVE_BRANCHES   = (1 << 1),
 	VG_OCL_DEEP_VLIW            = (1 << 2),
-	VG_OCL_NV_VERBOSE           = (1 << 3),
-	VG_OCL_BROKEN               = (1 << 4),
-	VG_OCL_NO_BINARIES          = (1 << 5),
+	VG_OCL_AMD_BFI_INT          = (1 << 3),
+	VG_OCL_NV_VERBOSE           = (1 << 4),
+	VG_OCL_BROKEN               = (1 << 5),
+	VG_OCL_NO_BINARIES          = (1 << 6),
 
 	VG_OCL_OPTIMIZATIONS        = (VG_OCL_UNROLL_LOOPS |
 				       VG_OCL_EXPENSIVE_BRANCHES |
-				       VG_OCL_DEEP_VLIW),
+				       VG_OCL_DEEP_VLIW |
+				       VG_OCL_AMD_BFI_INT),
 
 };
 
 int
 vg_ocl_get_quirks(vg_ocl_context_t *vocp)
 {
-	const char *vend;
+	uint32_t vend;
+	const char *dvn;
 	unsigned int quirks = 0;
 
 	/* Loop unrolling for devices other than CPUs */
 	if (!(vg_ocl_device_gettype(vocp->voc_ocldid) & CL_DEVICE_TYPE_CPU))
 		quirks |= VG_OCL_UNROLL_LOOPS;
 
-	vend = vg_ocl_device_getstr(vocp->voc_ocldid, CL_DEVICE_VENDOR);
-	if (!strcmp(vend, "NVIDIA Corporation") ||
-	    !strcmp(vend, "NVIDIA")) {
+	vend = vg_ocl_device_getuint(vocp->voc_ocldid, CL_DEVICE_VENDOR_ID);
+	switch (vend) {
+	case 0x10de: /* NVIDIA */
 		quirks |= VG_OCL_NV_VERBOSE;
 #ifdef WIN32
 		if (strcmp(vg_ocl_device_getstr(vocp->voc_ocldid,
@@ -420,15 +424,22 @@ vg_ocl_get_quirks(vg_ocl_context_t *vocp)
 			quirks |= VG_OCL_BROKEN;
 		}
 #endif
-	} else if (!strcmp(vend, "Advanced Micro Devices, Inc.") ||
-		   !strcmp(vend, "AMD")) {
+		break;
+	case 0x1002: /* AMD/ATI */
 		quirks |= VG_OCL_EXPENSIVE_BRANCHES;
 		quirks |= VG_OCL_DEEP_VLIW;
-		vend = vg_ocl_device_getstr(vocp->voc_ocldid, CL_DEVICE_NAME);
-		if (!strcmp(vend, "ATI RV710")) {
+		dvn = vg_ocl_device_getstr(vocp->voc_ocldid,
+					   CL_DEVICE_EXTENSIONS);
+		if (dvn && strstr(dvn, "cl_amd_media_ops"))
+			quirks |= VG_OCL_AMD_BFI_INT;
+		dvn = vg_ocl_device_getstr(vocp->voc_ocldid, CL_DEVICE_NAME);
+		if (!strcmp(dvn, "ATI RV710")) {
 			quirks &= ~VG_OCL_OPTIMIZATIONS;
 			quirks |= VG_OCL_NO_BINARIES;
 		}
+		break;
+	default:
+		break;
 	}
 	return quirks;
 }
@@ -481,18 +492,146 @@ vg_ocl_hash_program(vg_ocl_context_t *vocp, const char *opts,
 	MD5_Final(hash_out, &ctx);
 }
 
+typedef struct {
+	unsigned char	e_ident[16];
+	uint16_t	e_type;
+	uint16_t	e_machine;
+	uint32_t	e_version;
+	uint32_t	e_entry;
+	uint32_t	e_phoff;
+	uint32_t	e_shoff;
+	uint32_t	e_flags;
+	uint16_t	e_ehsize;
+	uint16_t	e_phentsize;
+	uint16_t	e_phnum;
+	uint16_t	e_shentsize;
+	uint16_t	e_shnum;
+	uint16_t	e_shstrndx;
+} vg_elf32_header_t;
+
+typedef struct {
+	uint32_t	sh_name;
+	uint32_t	sh_type;
+	uint32_t	sh_flags;
+	uint32_t	sh_addr;
+	uint32_t	sh_offset;
+	uint32_t	sh_size;
+	uint32_t	sh_link;
+	uint32_t	sh_info;
+	uint32_t	sh_addralign;
+	uint32_t	sh_entsize;
+} vg_elf32_shdr_t;
+
+int
+vg_ocl_amd_patch_inner(unsigned char *binary, size_t size)
+{
+	vg_elf32_header_t *ehp;
+	vg_elf32_shdr_t *shp, *nshp;
+	uint32_t *instr;
+	size_t off;
+	int i, n, txt2idx, patched;
+
+	ehp = (vg_elf32_header_t *) binary;
+	if ((size < sizeof(*ehp)) ||
+	    memcmp(ehp->e_ident, "\x7f" "ELF\1\1\1\x64", 8) ||
+	    !ehp->e_shoff)
+		return 0;
+
+	off = ehp->e_shoff + (ehp->e_shstrndx * ehp->e_shentsize);
+	nshp = (vg_elf32_shdr_t *) (binary + off);
+	if ((off + sizeof(*nshp)) > size)
+		return 0;
+
+	shp = (vg_elf32_shdr_t *) (binary + ehp->e_shoff);
+	n = 0;
+	txt2idx = 0;
+	for (i = 0; i < ehp->e_shnum; i++) {
+		off = nshp->sh_offset + shp[i].sh_name;
+		if (((off + 6) >= size) ||
+		    memcmp(binary + off, ".text", 6))
+			continue;
+		n++;
+		if (n == 2)
+			txt2idx = i;
+	}
+	if (n != 2)
+		return 0;
+
+	off = shp[txt2idx].sh_offset;
+	instr = (uint32_t *) (binary + off);
+	n = shp[txt2idx].sh_size / 4;
+	patched = 0;
+	for (i = 0; i < n; i += 2) {
+		if (((instr[i] & 0x02001000) == 0) &&
+		    ((instr[i+1] & 0x9003f000) == 0x0001a000)) {
+			instr[i+1] ^= (0x0001a000 ^ 0x0000c000);
+			patched++;
+		}
+	}
+
+	return patched;
+}
+
+int
+vg_ocl_amd_patch(vg_ocl_context_t *vocp, unsigned char *binary, size_t size)
+{
+	vg_context_t *vcp = vocp->base.vxc_vc;
+	vg_elf32_header_t *ehp;
+	unsigned char *ptr;
+	size_t offset = 1;
+	int ninner = 0, nrun, npatched = 0;
+
+	ehp = (vg_elf32_header_t *) binary;
+	if ((size < sizeof(*ehp)) ||
+	    memcmp(ehp->e_ident, "\x7f" "ELF\1\1\1\0", 8) ||
+	    !ehp->e_shoff)
+		return 0;
+
+	offset = 1;
+	while (offset < (size - 8)) {
+		ptr = (unsigned char *) memchr(binary + offset,
+					       0x7f,
+					       size - offset);
+		if (!ptr)
+			return npatched;
+		offset = ptr - binary;
+		ehp = (vg_elf32_header_t *) ptr;
+		if (((size - offset) < sizeof(*ehp)) ||
+		    memcmp(ehp->e_ident, "\x7f" "ELF\1\1\1\x64", 8) ||
+		    !ehp->e_shoff) {
+			offset += 1;
+			continue;
+		}
+
+		ninner++;
+		nrun = vg_ocl_amd_patch_inner(ptr, size - offset);
+		npatched += nrun;
+		if (vcp->vc_verbose > 1)
+			printf("AMD BFI_INT: patched %d instructions "
+			       "in kernel %d\n",
+			       nrun, ninner);
+		npatched++;
+		offset += 1;
+	}
+	return npatched;
+}
+
+
 int
 vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 		    const char *filename, const char *opts)
 {
 	FILE *kfp;
 	char *buf, *tbuf;
-	int len, fromsource = 0;
+	int len, fromsource = 0, patched = 0;
 	size_t sz, szr;
 	cl_program prog;
 	cl_int ret, sts;
 	unsigned char prog_hash[16];
 	char bin_name[64];
+
+	if (vcp->vc_verbose > 1)
+		printf("OpenCL compiler flags: %s\n", opts ? opts : "");
 
 	sz = 128 * 1024;
 	buf = (char *) malloc(sz);
@@ -568,6 +707,7 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 			}
 		}
 		fclose(kfp);
+	rebuild:
 		prog = clCreateProgramWithBinary(vocp->voc_oclctx,
 						 1, &vocp->voc_ocldid,
 						 &szr,
@@ -581,24 +721,22 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 		return 0;
 	}
 
-	if (vcp->vc_verbose > 1)
-		printf("OpenCL compiler flags: %s\n", opts ? opts : "");
-
 	if (vcp->vc_verbose > 0) {
-		if (fromsource) {
+		if (fromsource && !patched) {
 			printf("Compiling kernel...");
 			fflush(stdout);
 		}
 	}
 	ret = clBuildProgram(prog, 1, &vocp->voc_ocldid, opts, NULL, NULL);
 	if (ret != CL_SUCCESS) {
-		if ((vcp->vc_verbose > 0) && fromsource)
+		if ((vcp->vc_verbose > 0) && fromsource && !patched)
 			printf("failure.\n");
 		vg_ocl_error(NULL, ret, "clBuildProgram");
-	} else if ((vcp->vc_verbose > 0) && fromsource) {
+	} else if ((vcp->vc_verbose > 0) && fromsource && !patched) {
 		printf("done!\n");
 	}
-	if ((ret != CL_SUCCESS) || (vcp->vc_verbose > 1)) {
+	if ((ret != CL_SUCCESS) ||
+	    ((vcp->vc_verbose > 1) && fromsource && !patched)) {
 		vg_ocl_buildlog(vocp, prog);
 	}
 	if (ret != CL_SUCCESS) {
@@ -639,6 +777,23 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 				     "WARNING: clGetProgramInfo(BINARIES)");
 			free(buf);
 			goto out;
+		}
+
+		if ((vocp->voc_quirks & VG_OCL_AMD_BFI_INT) && !patched) {
+			patched = vg_ocl_amd_patch(vocp,
+						   (unsigned char *) buf, szr);
+			if (patched > 0) {
+				if (vcp->vc_verbose > 1)
+					printf("AMD BFI_INT patch complete\n");
+				clReleaseProgram(prog);
+				goto rebuild;
+			}
+			printf("WARNING: AMD BFI_INT patching failed\n");
+			if (patched < 0) {
+				/* Program was incompletely modified */
+				free(buf);
+				goto out;
+			}
 		}
 
 		kfp = fopen(bin_name, "wb");
@@ -743,6 +898,9 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did,
 	if (vocp->voc_quirks & VG_OCL_DEEP_VLIW)
 		end += snprintf(optbuf + end, sizeof(optbuf) - end,
 				"-DDEEP_VLIW ");
+	if (vocp->voc_quirks & VG_OCL_AMD_BFI_INT)
+		end += snprintf(optbuf + end, sizeof(optbuf) - end,
+				"-DAMD_BFI_INT ");
 	if (vocp->voc_quirks & VG_OCL_NV_VERBOSE)
 		end += snprintf(optbuf + end, sizeof(optbuf) - end,
 				"-cl-nv-verbose ");
