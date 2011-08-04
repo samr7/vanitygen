@@ -323,7 +323,7 @@ bn_uadd_vliw(bignum *r, bignum *a, bignum *b)
 		c |= (a->d[i] > x.d[i]) ? (1 << i) : 0;
 		cp |= (!~x.d[i]) ? (1 << i) : 0;
 	}
-	c = ((cp + (c << 1)) & ~cp);
+	c = ((cp + (c << 1)) ^ cp);
 	r->d[0] = x.d[0];
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
@@ -351,7 +351,7 @@ bn_uadd_c_vliw(bignum *r, bignum *a, __constant bn_word *b)
 		c |= (b[i] > x.d[i]) ? (1 << i) : 0;
 		cp |= (!~x.d[i]) ? (1 << i) : 0;
 	}
-	c = ((cp + (c << 1)) & ~cp);
+	c = ((cp + (c << 1)) ^ cp);
 	r->d[0] = x.d[0];
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
@@ -379,7 +379,7 @@ bn_usub_vliw(bignum *r, bignum *a, bignum *b)
 		c |= (a->d[i] < b->d[i]) ? (1 << i) : 0;
 		cp |= (!x.d[i]) ? (1 << i) : 0;
 	}
-	c = ((cp + (c << 1)) & ~cp);
+	c = ((cp + (c << 1)) ^ cp);
 	r->d[0] = x.d[0];
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
@@ -407,7 +407,7 @@ bn_usub_c_vliw(bignum *r, bignum *a, __constant bn_word *b)
 		c |= (a->d[i] < b[i]) ? (1 << i) : 0;
 		cp |= (!x.d[i]) ? (1 << i) : 0;
 	}
-	c = ((cp + (c << 1)) & ~cp);
+	c = ((cp + (c << 1)) ^ cp);
 	r->d[0] = x.d[0];
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
