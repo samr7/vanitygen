@@ -234,30 +234,30 @@ bn_neg(bignum *n)
 	} while (0)
 
 bn_word
-bn_uadd_seq(bignum *r, bignum *a, bignum *b)
+bn_uadd_words_seq(bn_word *r, bn_word *a, bn_word *b, int count)
 {
 	bn_word t, c = 0;
 	int i;
-	bn_add_word(r->d[0], a->d[0], b->d[0], t, c);
+	bn_add_word(r[0], a[0], b[0], t, c);
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 1; i < BN_NWORDS; i++)
-		bn_addc_word(r->d[i], a->d[i], b->d[i], t, c);
+	for (i = 1; i < count; i++)
+		bn_addc_word(r[i], a[i], b[i], t, c);
 	return c;
 }
 
 bn_word
-bn_uadd_c_seq(bignum *r, bignum *a, __constant bn_word *b)
+bn_uadd_words_c_seq(bn_word *r, bn_word *a, __constant bn_word *b, int count)
 {
 	bn_word t, c = 0;
 	int i;
-	bn_add_word(r->d[0], a->d[0], b[0], t, c);
+	bn_add_word(r[0], a[0], b[0], t, c);
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 1; i < BN_NWORDS; i++)
-		bn_addc_word(r->d[i], a->d[i], b[i], t, c);
+	for (i = 1; i < count; i++)
+		bn_addc_word(r[i], a[i], b[i], t, c);
 	return c;
 }
 
@@ -275,30 +275,30 @@ bn_uadd_c_seq(bignum *r, bignum *a, __constant bn_word *b)
 	} while (0)
 
 bn_word
-bn_usub_seq(bignum *r, bignum *a, bignum *b)
+bn_usub_words_seq(bn_word *r, bn_word *a, bn_word *b, int count)
 {
 	bn_word t, c = 0;
 	int i;
-	bn_sub_word(r->d[0], a->d[0], b->d[0], t, c);
+	bn_sub_word(r[0], a[0], b[0], t, c);
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 1; i < BN_NWORDS; i++)
-		bn_subb_word(r->d[i], a->d[i], b->d[i], t, c);
+	for (i = 1; i < count; i++)
+		bn_subb_word(r[i], a[i], b[i], t, c);
 	return c;
 }
 
 bn_word
-bn_usub_c_seq(bignum *r, bignum *a, __constant bn_word *b)
+bn_usub_words_c_seq(bn_word *r, bn_word *a, __constant bn_word *b, int count)
 {
 	bn_word t, c = 0;
 	int i;
-	bn_sub_word(r->d[0], a->d[0], b[0], t, c);
+	bn_sub_word(r[0], a[0], b[0], t, c);
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 1; i < BN_NWORDS; i++)
-		bn_subb_word(r->d[i], a->d[i], b[i], t, c);
+	for (i = 1; i < count; i++)
+		bn_subb_word(r[i], a[i], b[i], t, c);
 	return c;
 }
 
@@ -306,7 +306,7 @@ bn_usub_c_seq(bignum *r, bignum *a, __constant bn_word *b)
  * Add/subtract better suited for AMD's VLIW architecture
  */
 bn_word
-bn_uadd_vliw(bignum *r, bignum *a, bignum *b)
+bn_uadd_words_vliw(bn_word *r, bn_word *a, bn_word *b, int count)
 {
 	bignum x;
 	bn_word c = 0, cp = 0;
@@ -314,27 +314,27 @@ bn_uadd_vliw(bignum *r, bignum *a, bignum *b)
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 0; i < BN_NWORDS; i++)
-		x.d[i] = a->d[i] + b->d[i];
+	for (i = 0; i < count; i++)
+		x.d[i] = a[i] + b[i];
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 0; i < BN_NWORDS; i++) {
-		c |= (a->d[i] > x.d[i]) ? (1 << i) : 0;
+	for (i = 0; i < count; i++) {
+		c |= (a[i] > x.d[i]) ? (1 << i) : 0;
 		cp |= (!~x.d[i]) ? (1 << i) : 0;
 	}
 	c = ((cp + (c << 1)) ^ cp);
-	r->d[0] = x.d[0];
+	r[0] = x.d[0];
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 1; i < BN_NWORDS; i++)
-		r->d[i] = x.d[i] + ((c >> i) & 1);
-	return c >> BN_NWORDS;
+	for (i = 1; i < count; i++)
+		r[i] = x.d[i] + ((c >> i) & 1);
+	return c >> count;
 }
 
 bn_word
-bn_uadd_c_vliw(bignum *r, bignum *a, __constant bn_word *b)
+bn_uadd_words_c_vliw(bn_word *r, bn_word *a, __constant bn_word *b, int count)
 {
 	bignum x;
 	bn_word c = 0, cp = 0;
@@ -342,27 +342,27 @@ bn_uadd_c_vliw(bignum *r, bignum *a, __constant bn_word *b)
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 0; i < BN_NWORDS; i++)
-		x.d[i] = a->d[i] + b[i];
+	for (i = 0; i < count; i++)
+		x.d[i] = a[i] + b[i];
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 0; i < BN_NWORDS; i++) {
+	for (i = 0; i < count; i++) {
 		c |= (b[i] > x.d[i]) ? (1 << i) : 0;
 		cp |= (!~x.d[i]) ? (1 << i) : 0;
 	}
 	c = ((cp + (c << 1)) ^ cp);
-	r->d[0] = x.d[0];
+	r[0] = x.d[0];
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 1; i < BN_NWORDS; i++)
-		r->d[i] = x.d[i] + ((c >> i) & 1);
-	return c >> BN_NWORDS;
+	for (i = 1; i < count; i++)
+		r[i] = x.d[i] + ((c >> i) & 1);
+	return c >> count;
 }
 
 bn_word
-bn_usub_vliw(bignum *r, bignum *a, bignum *b)
+bn_usub_words_vliw(bn_word *r, bn_word *a, bn_word *b, int count)
 {
 	bignum x;
 	bn_word c = 0, cp = 0;
@@ -370,27 +370,27 @@ bn_usub_vliw(bignum *r, bignum *a, bignum *b)
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 0; i < BN_NWORDS; i++)
-		x.d[i] = a->d[i] - b->d[i];
+	for (i = 0; i < count; i++)
+		x.d[i] = a[i] - b[i];
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 0; i < BN_NWORDS; i++) {
-		c |= (a->d[i] < b->d[i]) ? (1 << i) : 0;
+	for (i = 0; i < count; i++) {
+		c |= (a[i] < b[i]) ? (1 << i) : 0;
 		cp |= (!x.d[i]) ? (1 << i) : 0;
 	}
 	c = ((cp + (c << 1)) ^ cp);
-	r->d[0] = x.d[0];
+	r[0] = x.d[0];
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 1; i < BN_NWORDS; i++)
-		r->d[i] = x.d[i] - ((c >> i) & 1);
-	return c >> BN_NWORDS;
+	for (i = 1; i < count; i++)
+		r[i] = x.d[i] - ((c >> i) & 1);
+	return c >> count;
 }
 
 bn_word
-bn_usub_c_vliw(bignum *r, bignum *a, __constant bn_word *b)
+bn_usub_words_c_vliw(bn_word *r, bn_word *a, __constant bn_word *b, int count)
 {
 	bignum x;
 	bn_word c = 0, cp = 0;
@@ -398,38 +398,42 @@ bn_usub_c_vliw(bignum *r, bignum *a, __constant bn_word *b)
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 0; i < BN_NWORDS; i++)
-		x.d[i] = a->d[i] - b[i];
+	for (i = 0; i < count; i++)
+		x.d[i] = a[i] - b[i];
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 0; i < BN_NWORDS; i++) {
-		c |= (a->d[i] < b[i]) ? (1 << i) : 0;
+	for (i = 0; i < count; i++) {
+		c |= (a[i] < b[i]) ? (1 << i) : 0;
 		cp |= (!x.d[i]) ? (1 << i) : 0;
 	}
 	c = ((cp + (c << 1)) ^ cp);
-	r->d[0] = x.d[0];
+	r[0] = x.d[0];
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
 #endif
-	for (i = 1; i < BN_NWORDS; i++)
-		r->d[i] = x.d[i] - ((c >> i) & 1);
-	return c >> BN_NWORDS;
+	for (i = 1; i < count; i++)
+		r[i] = x.d[i] - ((c >> i) & 1);
+	return c >> count;
 }
 
 
 #if defined(DEEP_VLIW)
-#define bn_uadd bn_uadd_vliw
-#define bn_uadd_c bn_uadd_c_vliw
-#define bn_usub bn_usub_vliw
-#define bn_usub_c bn_usub_c_vliw
+#define bn_uadd_words bn_uadd_words_vliw
+#define bn_uadd_words_c bn_uadd_words_c_vliw
+#define bn_usub_words bn_usub_words_vliw
+#define bn_usub_words_c bn_usub_words_c_vliw
 #else
-#define bn_uadd bn_uadd_seq
-#define bn_uadd_c bn_uadd_c_seq
-#define bn_usub bn_usub_seq
-#define bn_usub_c bn_usub_c_seq
+#define bn_uadd_words bn_uadd_words_seq
+#define bn_uadd_words_c bn_uadd_words_c_seq
+#define bn_usub_words bn_usub_words_seq
+#define bn_usub_words_c bn_usub_words_c_seq
 #endif
 
+#define bn_uadd(r, a, b) bn_uadd_words((r)->d, (a)->d, (b)->d, BN_NWORDS)
+#define bn_uadd_c(r, a, b) bn_uadd_words_c((r)->d, (a)->d, b, BN_NWORDS)
+#define bn_usub(r, a, b) bn_usub_words((r)->d, (a)->d, (b)->d, BN_NWORDS)
+#define bn_usub_c(r, a, b) bn_usub_words_c((r)->d, (a)->d, b, BN_NWORDS)
 
 /*
  * Modular add/sub
@@ -557,7 +561,7 @@ bn_from_mont(bignum *rb, bignum *b)
 #define WORKSIZE ((2*BN_NWORDS) + 1)
 	bn_word r[WORKSIZE];
 	bn_word m, c, p, s;
-	int i, j, top;
+	int i, j;
 	/* Copy the input to the working area */
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
@@ -583,25 +587,14 @@ bn_from_mont(bignum *rb, bignum *b)
 		for (j = 0; j < BN_NWORDS; j++)
 			bn_mul_add_word(r[i+j], modulus[j], m, c, p, s);
 		r[BN_NWORDS + i] += c;
-		if (r[BN_NWORDS + i] < c) {
-			if (++r[BN_NWORDS + i + 1] == 0)
-				++r[BN_NWORDS + i + 2];  /* The end..? */
-		}
-	}
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
+#if !defined(VERY_EXPENSIVE_BRANCHES)
+		if (r[BN_NWORDS + i] < c)
+			r[BN_NWORDS + i + 1] += 1;
+#else
+		r[BN_NWORDS + i + 1] += (r[BN_NWORDS + i] < c) ? 1 : 0;
 #endif
-	for (top = WORKSIZE - 1; ((top > BN_NWORDS) & (r[top] == 0)); top--);
-	if (top <= BN_NWORDS) {
-		*rb = bn_zero;
-		return;
 	}
-	c = 0;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (j = 0; j < BN_NWORDS; j++)
-		bn_subb_word(rb->d[j], r[BN_NWORDS + j], modulus[j], p, c);
+	c = bn_usub_words_c(rb->d, &r[BN_NWORDS], modulus, BN_NWORDS);
 	if (c) {
 #ifdef UNROLL_MAX
 #pragma unroll UNROLL_MAX
@@ -660,14 +653,13 @@ bn_mod_inverse(bignum *r, bignum *n)
 	if (!bn_is_one(a)) {
 		/* no modular inverse */
 		*r = bn_zero;
-		return;
+	} else {
+		/* Compute y % m as cheaply as possible */
+		while (yc < 0x80000000)
+			yc -= bn_usub_c(&y, &y, modulus);
+		bn_neg(&y);
+		*r = y;
 	}
-	/* Compute y % m as cheaply as possible */
-	while (yc < 0x80000000)
-		yc -= bn_usub_c(&y, &y, modulus);
-	bn_neg(&y);
-	*r = y;
-	return;
 }
 
 /*
