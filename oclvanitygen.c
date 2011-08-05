@@ -426,16 +426,21 @@ vg_ocl_get_quirks(vg_ocl_context_t *vocp)
 #endif
 		break;
 	case 0x1002: /* AMD/ATI */
-		quirks |= VG_OCL_EXPENSIVE_BRANCHES;
-		quirks |= VG_OCL_DEEP_VLIW;
-		dvn = vg_ocl_device_getstr(vocp->voc_ocldid,
-					   CL_DEVICE_EXTENSIONS);
-		if (dvn && strstr(dvn, "cl_amd_media_ops"))
-			quirks |= VG_OCL_AMD_BFI_INT;
-		dvn = vg_ocl_device_getstr(vocp->voc_ocldid, CL_DEVICE_NAME);
-		if (!strcmp(dvn, "ATI RV710")) {
-			quirks &= ~VG_OCL_OPTIMIZATIONS;
-			quirks |= VG_OCL_NO_BINARIES;
+		if (vg_ocl_device_gettype(vocp->voc_ocldid) &
+		    CL_DEVICE_TYPE_GPU) {
+			quirks |= VG_OCL_EXPENSIVE_BRANCHES;
+			quirks |= VG_OCL_DEEP_VLIW;
+			dvn = vg_ocl_device_getstr(vocp->voc_ocldid,
+						   CL_DEVICE_EXTENSIONS);
+			if (dvn && strstr(dvn, "cl_amd_media_ops"))
+				quirks |= VG_OCL_AMD_BFI_INT;
+
+			dvn = vg_ocl_device_getstr(vocp->voc_ocldid,
+						   CL_DEVICE_NAME);
+			if (!strcmp(dvn, "ATI RV710")) {
+				quirks &= ~VG_OCL_OPTIMIZATIONS;
+				quirks |= VG_OCL_NO_BINARIES;
+			}
 		}
 		break;
 	default:
@@ -1567,10 +1572,10 @@ out:
 
 void *
 vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
-	       int worksize, int nrows, int ncols, int invsize)
+	       int worksize, int nthreads, int nrows, int ncols, int invsize)
 {
 	int i;
-	int round, full_worksize;
+	int round, full_threads, wsmult;
 	cl_ulong memsize, allocsize;
 
 	const BN_ULONG rekey_max = 100000000;
@@ -1610,15 +1615,44 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
 	 *    (create two, keep one running while we service the other or wait)
 	 */
 
-	if (!worksize) {
-		/* Pick a work size sufficient to saturate one compute unit */
-		worksize = vg_ocl_device_getsizet(vocp->voc_ocldid,
-					  CL_DEVICE_MAX_WORK_GROUP_SIZE);
+	if (!nthreads) {
+		/* Pick nthreads sufficient to saturate one compute unit */
+		if (vg_ocl_device_gettype(vocp->voc_ocldid) &
+		    CL_DEVICE_TYPE_CPU)
+			nthreads = 1;
+		else
+			nthreads = vg_ocl_device_getsizet(vocp->voc_ocldid,
+					CL_DEVICE_MAX_WORK_GROUP_SIZE);
 	}
 
-	full_worksize = vg_ocl_device_getsizet(vocp->voc_ocldid,
-					       CL_DEVICE_MAX_COMPUTE_UNITS);
-	full_worksize *= worksize;
+	full_threads = vg_ocl_device_getsizet(vocp->voc_ocldid,
+					      CL_DEVICE_MAX_COMPUTE_UNITS);
+	full_threads *= nthreads;
+
+	/*
+	 * The work size should be set to a point of diminishing
+	 * returns for the batch size of the heap_invert kernel.
+	 * Each value added to the batch trades one complete modular
+	 * inversion for four multiply operations.
+	 * Selection of a work size depends on the throughput ratio of
+	 * the multiply and modular inversion operations.
+	 *
+	 * The measured value for the OpenSSL implementations on my CPU
+	 * is 80:1.  This causes heap_invert to break even with batches
+	 * of 20, and receive 10% incremental returns at 200.  The CPU
+	 * work size is therefore set to 256.
+	 *
+	 * The ratio on most GPUs with the oclvanitygen implementations
+	 * is closer to 500:1, and larger batches are required for
+	 * good performance.
+	 */
+	if (!worksize) {
+		if (vg_ocl_device_gettype(vocp->voc_ocldid) &
+		    CL_DEVICE_TYPE_GPU)
+			worksize = 2048;
+		else
+			worksize = 256;
+	}
 
 	if (!ncols) {
 		memsize = vg_ocl_device_getulong(vocp->voc_ocldid,
@@ -1626,23 +1660,27 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
 		allocsize = vg_ocl_device_getulong(vocp->voc_ocldid,
 					CL_DEVICE_MAX_MEM_ALLOC_SIZE);
 		memsize /= 2;
-		ncols = full_worksize;
+		ncols = full_threads;
 		nrows = 1;
-		/* Find row and column counts close to sqrt(full_worksize) */
+		/* Find row and column counts close to sqrt(full_threads) */
 		while ((ncols > nrows) && !(ncols & 1)) {
-			ncols >>= 1;
-			nrows <<= 1;
+			ncols /= 2;
+			nrows *= 2;
 		}
-		/* Increase row & column counts to saturate device memory */
-		if (!(vg_ocl_device_gettype(vocp->voc_ocldid) &
-		      CL_DEVICE_TYPE_CPU)) {
-			while (((ncols * nrows * 2 * 128) < memsize) &&
-			       ((ncols * nrows * 2 * 64) < allocsize)) {
-				if (ncols > nrows)
-					nrows *= 2;
-				else
-					ncols *= 2;
-			}
+
+		/*
+		 * Increase row & column counts to satisfy work size
+		 * multiplier or fill available memory.
+		 */
+		wsmult = 1;
+		while ((!worksize || (wsmult < worksize)) &&
+		       ((ncols * nrows * 2 * 128) < memsize) &&
+		       ((ncols * nrows * 2 * 64) < allocsize)) {
+			if (ncols > nrows)
+				nrows *= 2;
+			else
+				ncols *= 2;
+			wsmult *= 2;
 		}
 	}
 
@@ -1651,7 +1689,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
 	if (!invsize) {
 		invsize = 1;
 		while (!(round % (invsize << 1)) &&
-		       ((round / invsize) > full_worksize))
+		       ((round / invsize) > full_threads))
 			invsize <<= 1;
 	}
 
@@ -2191,7 +2229,8 @@ usage(const char *name)
 "-p <platform> Select OpenCL platform\n"
 "-d <device>   Select OpenCL device\n"
 "-S            Safe mode, disable OpenCL loop unrolling optimizations\n"
-"-w <worksize> Set target thread count per multiprocessor\n"
+"-w <worksize> Set work items per thread in a work unit\n"
+"-t <threads>  Set target thread count per multiprocessor\n"
 "-g <x>x<y>    Set grid size\n"
 "-b <invsize>  Set modular inverse ops per thread\n"
 "-f <file>     File containing list of patterns, one per line\n"
@@ -2215,6 +2254,7 @@ main(int argc, char **argv)
 	char **patterns, *pend;
 	int verbose = 1;
 	int npatterns = 0;
+	int nthreads = 0;
 	int worksize = 0;
 	int nrows = 0, ncols = 0;
 	int invsize = 0;
@@ -2225,7 +2265,7 @@ main(int argc, char **argv)
 	const char *result_file = NULL;
 
 	while ((opt = getopt(argc, argv,
-			     "vqrikNTX:p:d:w:g:b:Sh?f:o:s:")) != -1) {
+			     "vqrikNTX:p:d:w:t:g:b:Sh?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -2264,6 +2304,13 @@ main(int argc, char **argv)
 			worksize = atoi(optarg);
 			if (worksize == 0) {
 				printf("Invalid work size '%s'\n", optarg);
+				return 1;
+			}
+			break;
+		case 't':
+			nthreads = atoi(optarg);
+			if (nthreads == 0) {
+				printf("Invalid thread count '%s'\n", optarg);
 				return 1;
 			}
 			break;
@@ -2407,6 +2454,6 @@ main(int argc, char **argv)
 	}
 
 	vg_opencl_loop(vcp, did, safe_mode,
-		       worksize, nrows, ncols, invsize);
+		       worksize, nthreads, nrows, ncols, invsize);
 	return 0;
 }
