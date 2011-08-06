@@ -12,14 +12,25 @@ Prerequisites:
   - PCRE: http://www.psyon.org/projects/pcre-win32/
   - AMD APP SDK -or- NVIDIA CUDA SDK
 
-Once you have set up these components, edit the Makefile.Win32 to 
-include the paths where these components are located.
+Once you have set up these components, edit the following variables
+in Makefile.Win32 to reflect the paths where these components were
+installed:
+
+OPENSSL_DIR
+PTHREADS_DIR
+PCRE_DIR
+OPENCL_DIR
 
 Note that pthreads and PCRE may be built as static libraries or DLLs.  
-The default Makefile includes CFLAGS to link the static versions of 
-those libraries.  If you want to link against DLLs, make sure to change 
-the CFLAGS.
+The default Makefile.Win32 includes CFLAGS required to link the static
+versions of those libraries.  If you want to link against DLLs, make
+sure to change the CFLAGS.
 
-Then, open a Visual Studio command prompt window, and run:
+Additionally, to create a usable static build of the pthreads-Win32
+library, some other changes must be done.  You must edit the Makefile,
+and remove "/MD" from the CFLAGS.  Then, build with: "nmake VC-static"
+
+After dependencies have been prepared, open a Visual Studio command
+prompt window, and run:
 
 nmake /fMakefile.Win32 vanitygen.exe oclvanitygen.exe
