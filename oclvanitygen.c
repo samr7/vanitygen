@@ -1630,16 +1630,22 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
 	full_threads *= nthreads;
 
 	/*
-	 * The work size should be set to a point of diminishing
-	 * returns for the batch size of the heap_invert kernel.
+	 * The work size selection is complicated, and the most
+	 * important factor is the batch size of the heap_invert kernel.
 	 * Each value added to the batch trades one complete modular
-	 * inversion for four multiply operations.
-	 * Selection of a work size depends on the throughput ratio of
-	 * the multiply and modular inversion operations.
+	 * inversion for four multiply operations.  Ideally the work
+	 * size would be as large as possible.  The practical limiting
+	 * factors are:
+	 * 1. Available memory
+	 * 2. Responsiveness and operational latency
+	 *
+	 * We take a naive approach and limit batch size to a point of
+	 * sufficiently diminishing returns, hoping that responsiveness
+	 * will be sufficient.
 	 *
 	 * The measured value for the OpenSSL implementations on my CPU
-	 * is 80:1.  This causes heap_invert to break even with batches
-	 * of 20, and receive 10% incremental returns at 200.  The CPU
+	 * is 80:1.  This causes heap_invert to get batches of 20 or so
+	 * for free, and receive 10% incremental returns at 200.  The CPU
 	 * work size is therefore set to 256.
 	 *
 	 * The ratio on most GPUs with the oclvanitygen implementations
@@ -1673,7 +1679,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
 		 * multiplier or fill available memory.
 		 */
 		wsmult = 1;
-		while ((!worksize || (wsmult < worksize)) &&
+		while ((!worksize || ((wsmult * 2) < worksize)) &&
 		       ((ncols * nrows * 2 * 128) < memsize) &&
 		       ((ncols * nrows * 2 * 64) < allocsize)) {
 			if (ncols > nrows)
@@ -1712,6 +1718,15 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
 			printf("Modular inverse work per task (%d) "
 			       "must be a power of 2\n", invsize);
 		goto out;
+	}
+
+	if (!vcp->vc_remove_on_match &&
+	    (vcp->vc_chance >= 1.0f) &&
+	    (vcp->vc_chance < round) &&
+	    (vcp->vc_verbose > 0)) {
+		printf("WARNING: low pattern difficulty\n");
+		printf("WARNING: better match throughput is possible "
+		       "using vanitygen on the CPU\n");
 	}
 
 	nslots = 2;
