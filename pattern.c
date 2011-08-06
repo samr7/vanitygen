@@ -124,9 +124,13 @@ vg_encode_privkey(EC_KEY *pkey, int addrtype, char *result)
 	bn = EC_KEY_get0_private_key(pkey);
 
 	eckey_buf[0] = addrtype;
-	nbytes = BN_bn2bin(bn, &eckey_buf[1]);
+	nbytes = BN_num_bytes(bn);
+	assert(nbytes <= 32);
+	if (nbytes < 32)
+		memset(eckey_buf + 1, 0, 32 - nbytes);
+	BN_bn2bin(bn, &eckey_buf[33 - nbytes]);
 
-	encode_b58_check(eckey_buf, nbytes + 1, result);
+	encode_b58_check(eckey_buf, 33, result);
 }
 
 
