@@ -647,7 +647,8 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 
 	kfp = fopen(filename, "r");
 	if (!kfp) {
-		printf("Error loading CL kernel: %s\n", strerror(errno));
+		printf("Error loading kernel file '%s': %s\n",
+		       filename, strerror(errno));
 		free(buf);
 		return 0;
 	}
