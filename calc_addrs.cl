@@ -94,7 +94,18 @@
 #define load_be32(v) bswap32(v)
 #endif
 
-/* Explicit unrolling */
+/*
+ * Loop unrolling macros
+ *
+ * In most cases, preprocessor unrolling works best.
+ * The exception is NVIDIA's compiler, which seems to take unreasonably
+ * long to compile a loop with a larger iteration count, or a loop with
+ * a body of >50 PTX instructions, with preprocessor unrolling.
+ * However, it does not seem to take as long with pragma unroll, and
+ * produces good output.
+ */
+
+/* Explicit loop unrolling */
 #define unroll_5(a) do { a(0) a(1) a(2) a(3) a(4) } while (0)
 #define unroll_8(a) do { a(0) a(1) a(2) a(3) a(4) a(5) a(6) a(7) } while (0)
 #define unroll_8_sf(a) do { a(1) a(2) a(3) a(4) a(5) a(6) a(7) } while (0)
@@ -118,6 +129,7 @@
 	a(56) a(57) a(58) a(59) a(60) a(61) a(62) a(63) \
 	} while (0)
 
+/* Conditional loop unrolling */
 #if defined(DEEP_PREPROC_UNROLL)
 #define iter_5(a) unroll_5(a)
 #define iter_8(a) unroll_8(a)
@@ -201,9 +213,8 @@ __constant bn_word mont_n0[2] = { 0xd2253531, 0xd838091d };
 void
 bn_lshift1(bignum *bn)
 {
-#define bn_lshift1_inner1(i) \
-	bn->d[i] = (bn->d[i] << 1) | (bn->d[i-1] >> 31);
-
+#define bn_lshift1_inner1(i)						\
+		bn->d[i] = (bn->d[i] << 1) | (bn->d[i-1] >> 31);
 	bn_unroll_reverse_sl(bn_lshift1_inner1);
 	bn->d[0] <<= 1;
 }
@@ -218,12 +229,11 @@ bn_rshift(bignum *bn, int shift)
 	wd = (shift >> BN_WSHIFT);
 	ihw = (wd < BN_WBITS) ? bn->d[wd] : 0;
 
-#define bn_rshift_inner1(i) \
-	wd++; \
-	ilw = ihw; \
-	ihw = (wd < BN_WBITS) ? bn->d[wd] : 0; \
-	bn->d[i] = (ilw >> iws) | (ihw << iwr);
-
+#define bn_rshift_inner1(i)				\
+		wd++;					\
+		ilw = ihw;				\
+		ihw = (wd < BN_WBITS) ? bn->d[wd] : 0;	\
+		bn->d[i] = (ilw >> iws) | (ihw << iwr);
 	bn_unroll_sl(bn_rshift_inner1);
 	bn->d[BN_NWORDS-1] = (ihw >> iws);
 }
@@ -231,9 +241,8 @@ bn_rshift(bignum *bn, int shift)
 void
 bn_rshift1(bignum *bn)
 {
-#define bn_rshift1_inner1(i) \
-	bn->d[i] = (bn->d[i+1] << 31) | (bn->d[i] >> 1);
-
+#define bn_rshift1_inner1(i)						\
+		bn->d[i] = (bn->d[i+1] << 31) | (bn->d[i] >> 1);
 	bn_unroll_sl(bn_rshift1_inner1);
 	bn->d[BN_NWORDS-1] >>= 1;
 }
@@ -241,10 +250,9 @@ bn_rshift1(bignum *bn)
 void
 bn_rshift1_2(bignum *bna, bignum *bnb)
 {
-#define bn_rshift1_2_inner1(i) \
-		bna->d[i] = (bna->d[i+1] << 31) | (bna->d[i] >> 1); \
+#define bn_rshift1_2_inner1(i)						\
+		bna->d[i] = (bna->d[i+1] << 31) | (bna->d[i] >> 1);	\
 		bnb->d[i] = (bnb->d[i+1] << 31) | (bnb->d[i] >> 1);
-
 	bn_unroll_sl(bn_rshift1_2_inner1);
 	bna->d[BN_NWORDS-1] >>= 1;
 	bnb->d[BN_NWORDS-1] >>= 1;
@@ -260,10 +268,9 @@ bn_ucmp_ge(bignum *a, bignum *b)
 {
 	int l = 0, g = 0;
 
-#define bn_ucmp_ge_inner1(i) \
-	if (a->d[i] < b->d[i]) l |= (1 << i); \
-	if (a->d[i] > b->d[i]) g |= (1 << i);
-
+#define bn_ucmp_ge_inner1(i)				\
+		if (a->d[i] < b->d[i]) l |= (1 << i);	\
+		if (a->d[i] > b->d[i]) g |= (1 << i);
 	bn_unroll_reverse(bn_ucmp_ge_inner1);
 	return (l > g) ? 0 : 1;
 }
@@ -273,10 +280,9 @@ bn_ucmp_ge_c(bignum *a, __constant bn_word *b)
 {
 	int l = 0, g = 0;
 
-#define bn_ucmp_ge_c_inner1(i) \
-	if (a->d[i] < b[i]) l |= (1 << i); \
-	if (a->d[i] > b[i]) g |= (1 << i);
-
+#define bn_ucmp_ge_c_inner1(i)				\
+		if (a->d[i] < b[i]) l |= (1 << i);	\
+		if (a->d[i] > b[i]) g |= (1 << i);
 	bn_unroll_reverse(bn_ucmp_ge_c_inner1);
 	return (l > g) ? 0 : 1;
 }
@@ -290,9 +296,8 @@ bn_neg(bignum *n)
 {
 	int c = 1;
 
-#define bn_neg_inner1(i) \
-	c = (n->d[i] = (~n->d[i]) + c) ? 0 : c;
-
+#define bn_neg_inner1(i)				\
+		c = (n->d[i] = (~n->d[i]) + c) ? 0 : c;
 	bn_unroll(bn_neg_inner1);
 }
 
@@ -317,9 +322,8 @@ bn_uadd_words_seq(bn_word *r, bn_word *a, bn_word *b)
 {
 	bn_word t, c = 0;
 
-#define bn_uadd_words_seq_inner1(i) \
-	bn_addc_word(r[i], a[i], b[i], t, c);
-
+#define bn_uadd_words_seq_inner1(i)			\
+		bn_addc_word(r[i], a[i], b[i], t, c);
 	bn_add_word(r[0], a[0], b[0], t, c);
 	bn_unroll_sf(bn_uadd_words_seq_inner1);
 	return c;
@@ -353,8 +357,8 @@ bn_usub_words_seq(bn_word *r, bn_word *a, bn_word *b)
 {
 	bn_word t, c = 0;
 
-#define bn_usub_words_seq_inner1(i) \
-	bn_subb_word(r[i], a[i], b[i], t, c);
+#define bn_usub_words_seq_inner1(i)			\
+		bn_subb_word(r[i], a[i], b[i], t, c);
 
 	bn_sub_word(r[0], a[0], b[0], t, c);
 	bn_unroll_sf(bn_usub_words_seq_inner1);
@@ -380,15 +384,15 @@ bn_uadd_words_vliw(bn_word *r, bn_word *a, bn_word *b)
 	bignum x;
 	bn_word c = 0, cp = 0;
 
-#define bn_uadd_words_vliw_inner1(i) \
-	x.d[i] = a[i] + b[i];
+#define bn_uadd_words_vliw_inner1(i)		\
+		x.d[i] = a[i] + b[i];
 
-#define bn_uadd_words_vliw_inner2(i) \
-	c |= (a[i] > x.d[i]) ? (1 << i) : 0; \
-	cp |= (!~x.d[i]) ? (1 << i) : 0;
+#define bn_uadd_words_vliw_inner2(i)			\
+		c |= (a[i] > x.d[i]) ? (1 << i) : 0;	\
+		cp |= (!~x.d[i]) ? (1 << i) : 0;
 
-#define bn_uadd_words_vliw_inner3(i) \
-	r[i] = x.d[i] + ((c >> i) & 1);
+#define bn_uadd_words_vliw_inner3(i)		\
+		r[i] = x.d[i] + ((c >> i) & 1);
 
 	bn_unroll(bn_uadd_words_vliw_inner1);
 	bn_unroll(bn_uadd_words_vliw_inner2);
@@ -418,15 +422,15 @@ bn_usub_words_vliw(bn_word *r, bn_word *a, bn_word *b)
 	bignum x;
 	bn_word c = 0, cp = 0;
 
-#define bn_usub_words_vliw_inner1(i) \
-	x.d[i] = a[i] - b[i];
+#define bn_usub_words_vliw_inner1(i)		\
+		x.d[i] = a[i] - b[i];
 
-#define bn_usub_words_vliw_inner2(i) \
-	c |= (a[i] < b[i]) ? (1 << i) : 0; \
-	cp |= (!x.d[i]) ? (1 << i) : 0;
+#define bn_usub_words_vliw_inner2(i)			\
+		c |= (a[i] < b[i]) ? (1 << i) : 0;	\
+		cp |= (!x.d[i]) ? (1 << i) : 0;
 
-#define bn_usub_words_vliw_inner3(i) \
-	r[i] = x.d[i] - ((c >> i) & 1);
+#define bn_usub_words_vliw_inner3(i)		\
+		r[i] = x.d[i] - ((c >> i) & 1);
 
 	bn_unroll(bn_usub_words_vliw_inner1);
 	bn_unroll(bn_usub_words_vliw_inner2);
@@ -560,6 +564,10 @@ bn_mul_mont(bignum *r, bignum *a, bignum *b)
 	t.d[BN_NWORDS-1] = tea + c;			 \
 	tea = teb + ((t.d[BN_NWORDS-1] < c) ? 1 : 0);
 
+	/*
+	 * The outer loop here is quite long, and we won't unroll it
+	 * unless VERY_EXPENSIVE_BRANCHES is set.
+	 */
 #if defined(VERY_EXPENSIVE_BRANCHES)
 	bn_unroll_sf(bn_mul_mont_inner3);
 	c = tea | !bn_usub_c(r, &t, modulus);
@@ -621,18 +629,28 @@ bn_from_mont(bignum *rb, bignum *b)
 	r[BN_NWORDS + i] += c;			 \
 	bn_from_mont_inner3_2(i)
 
+	/*
+	 * The outer loop here is not very long, so we will unroll
+	 * it by default.  However, it's just complicated enough to
+	 * cause NVIDIA's compiler to take unreasonably long to compile
+	 * it, unless we use pragma unroll.
+	 */
 #if !defined(PRAGMA_UNROLL)
-	bn_unroll(bn_from_mont_inner3);
+	bn_iter(bn_from_mont_inner3);
 #else
 #pragma unroll 8
 	for (i = 0; i < BN_NWORDS; i++) { bn_from_mont_inner3(i) }
 #endif
 
-#define bn_from_mont_inner4(i)			\
-	rb->d[i] = r[BN_NWORDS + i];
-
+	/*
+	 * Make sure the result is less than the modulus.
+	 * Subtracting is not much more expensive than compare, so
+	 * subtract always and assign based on the carry out value.
+	 */
 	c = bn_usub_words_c(rb->d, &r[BN_NWORDS], modulus);
 	if (c) {
+#define bn_from_mont_inner4(i)				\
+			rb->d[i] = r[BN_NWORDS + i];
 		bn_unroll(bn_from_mont_inner4);
 	}
 }
@@ -801,7 +819,7 @@ sha2_256_block(uint *out, uint *in)
 	sha2_stvar(state, i, 7) = t1 + t2;				\
 
 #if !defined(PRAGMA_UNROLL)
-	unroll_64(sha2_256_block_inner_2);
+	iter_64(sha2_256_block_inner_2);
 #else
 #pragma unroll 64
 	for (i = 0; i < 64; i++) { sha2_256_block_inner_2(i) }
@@ -934,11 +952,11 @@ ripemd160_block(uint *out, uint *in)
 			ripemd160_f4, ripemd160_f0, t);
 
 #if !defined(PRAGMA_UNROLL)
-	unroll_16(ripemd160_block_inner_p0);
-	unroll_16(ripemd160_block_inner_p1);
-	unroll_16(ripemd160_block_inner_p2);
-	unroll_16(ripemd160_block_inner_p3);
-	unroll_16(ripemd160_block_inner_p4);
+	iter_16(ripemd160_block_inner_p0);
+	iter_16(ripemd160_block_inner_p1);
+	iter_16(ripemd160_block_inner_p2);
+	iter_16(ripemd160_block_inner_p3);
+	iter_16(ripemd160_block_inner_p4);
 #else
 #pragma unroll 16
 	for (i = 0; i < 16; i++) { ripemd160_block_inner_p0(i); }
