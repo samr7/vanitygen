@@ -30,6 +30,7 @@
 #include <openssl/rand.h>
 
 #include "pattern.h"
+#include "util.h"
 
 const char *version = "0.16";
 
@@ -341,8 +342,6 @@ vg_thread_loop(void *arg)
 			SHA256(eckey_buf, len, hash1);
 			RIPEMD160(hash1, sizeof(hash1), &vxcp->vxc_binres[1]);
 
-			vxcp->vxc_point = ppnt[i];
-
 			switch (test_func(vxcp)) {
 			case 1:
 				npoints = 0;
@@ -356,9 +355,11 @@ vg_thread_loop(void *arg)
 			}
 		}
 
-		c += (i + 1);
+		c += i;
 		if (c >= output_interval) {
 			output_interval = vg_output_timing(vcp, c, &tvstart);
+			if (output_interval > 250000)
+				output_interval = 250000;
 			c = 0;
 		}
 

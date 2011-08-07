@@ -38,6 +38,7 @@
 #endif
 
 #include "pattern.h"
+#include "util.h"
 
 
 const char *version = "0.16";
@@ -1680,7 +1681,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
 		 * multiplier or fill available memory.
 		 */
 		wsmult = 1;
-		while ((!worksize || ((wsmult * 2) < worksize)) &&
+		while ((!worksize || ((wsmult * 2) <= worksize)) &&
 		       ((ncols * nrows * 2 * 128) < memsize) &&
 		       ((ncols * nrows * 2 * 64) < allocsize)) {
 			if (ncols > nrows)

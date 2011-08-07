@@ -19,8 +19,6 @@
 #if !defined (__VG_PATTERN_H__)
 #define __VG_PATTERN_H__
 
-#include <stdint.h>
-
 #include <openssl/bn.h>
 #include <openssl/ec.h>
 
@@ -36,10 +34,6 @@
 #endif
 
 
-extern void dumphex(const unsigned char *src, size_t len);
-extern void dumpbn(const BIGNUM *bn);
-extern void dumpbin(const uint8_t *data, size_t nbytes);
-
 typedef struct _vg_context_s vg_context_t;
 
 /* Context of one pattern-matching unit within the process */
@@ -47,7 +41,6 @@ typedef struct _vg_exec_context_s {
 	vg_context_t			*vxc_vc;
 	BN_CTX				*vxc_bnctx;
 	EC_KEY				*vxc_key;
-	EC_POINT			*vxc_point;
 	int				vxc_delta;
 	unsigned char			vxc_binres[28];
 	BIGNUM				vxc_bntarg;
@@ -104,12 +97,5 @@ extern vg_context_t *vg_regex_context_new(int addrtype, int privtype);
 extern int vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last);
 extern void vg_output_match(vg_context_t *vcp, EC_KEY *pkey,
 			    const char *pattern);
-extern void vg_encode_address(EC_KEY *pkey, int addrtype, char *result);
-extern void vg_encode_privkey(EC_KEY *pkey, int addrtype, char *result);
-
-
-
-extern int vg_read_file(FILE *fp, char ***result, int *rescount);
-
 
 #endif /* !defined (__VG_PATTERN_H__) */

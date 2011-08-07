@@ -7,14 +7,14 @@ OPENCL_INCLUDE = /I$(OPENCL_DIR)\include
 OPENCL_LIBS = $(OPENCL_DIR)\lib\x86\OpenCL.lib
 CFLAGS = /D_WIN32 /DPTW32_STATIC_LIB /DPCRE_STATIC /I$(OPENSSL_DIR)\include /I$(PTHREADS_DIR) /I$(PCRE_DIR)
 LIBS = $(OPENSSL_DIR)\lib\libeay32.lib $(PTHREADS_DIR)\pthreadVC2.lib $(PCRE_DIR)\pcre.lib ws2_32.lib
-OBJS = vanitygen.obj oclvanitygen.obj pattern.obj winglue.obj
+OBJS = vanitygen.obj oclvanitygen.obj pattern.obj util.obj winglue.obj
 
 all: vanitygen.exe
 
-vanitygen.exe: vanitygen.obj pattern.obj winglue.obj
+vanitygen.exe: vanitygen.obj pattern.obj util.obj winglue.obj
 	link /nologo /out:$@ $** $(LIBS)
 
-oclvanitygen.exe: oclvanitygen.obj pattern.obj winglue.obj
+oclvanitygen.exe: oclvanitygen.obj pattern.obj util.obj winglue.obj
 	link /nologo /out:$@ $** $(LIBS) $(OPENCL_LIBS)
 
 .c.obj:

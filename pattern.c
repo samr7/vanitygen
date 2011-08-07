@@ -32,127 +32,8 @@
 #include <pcre.h>
 
 #include "pattern.h"
+#include "util.h"
 
-static const char *b58_alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-static void
-encode_b58_check(void *buf, size_t len, char *result)
-{
-	unsigned char hash1[32];
-	unsigned char hash2[32];
-
-	int d, p;
-
-	BN_CTX *bnctx;
-	BIGNUM *bn, *bndiv, *bntmp;
-	BIGNUM bna, bnb, bnbase, bnrem;
-	unsigned char *binres;
-	int brlen, zpfx;
-
-	bnctx = BN_CTX_new();
-	BN_init(&bna);
-	BN_init(&bnb);
-	BN_init(&bnbase);
-	BN_init(&bnrem);
-	BN_set_word(&bnbase, 58);
-
-	bn = &bna;
-	bndiv = &bnb;
-
-	brlen = (2 * len) + 4;
-	binres = (unsigned char*) malloc(brlen);
-	memcpy(binres, buf, len);
-
-	SHA256(binres, len, hash1);
-	SHA256(hash1, sizeof(hash1), hash2);
-	memcpy(&binres[len], hash2, 4);
-
-	BN_bin2bn(binres, len + 4, bn);
-
-	for (zpfx = 0; zpfx < (len + 4) && binres[zpfx] == 0; zpfx++);
-
-	p = brlen;
-	while (!BN_is_zero(bn)) {
-		BN_div(bndiv, &bnrem, bn, &bnbase, bnctx);
-		bntmp = bn;
-		bn = bndiv;
-		bndiv = bntmp;
-		d = BN_get_word(&bnrem);
-		binres[--p] = b58_alphabet[d];
-	}
-
-	while (zpfx--) {
-		binres[--p] = b58_alphabet[0];
-	}
-
-	memcpy(result, &binres[p], brlen - p);
-	result[brlen - p] = '\0';
-
-	free(binres);
-	BN_clear_free(&bna);
-	BN_clear_free(&bnb);
-	BN_clear_free(&bnbase);
-	BN_clear_free(&bnrem);
-	BN_CTX_free(bnctx);
-}
-
-void
-vg_encode_address(EC_KEY *pkey, int addrtype, char *result)
-{
-	unsigned char eckey_buf[128], *pend;
-	unsigned char binres[21] = {0,};
-	unsigned char hash1[32];
-
-	pend = eckey_buf;
-
-	i2o_ECPublicKey(pkey, &pend);
-
-	binres[0] = addrtype;
-	SHA256(eckey_buf, pend - eckey_buf, hash1);
-	RIPEMD160(hash1, sizeof(hash1), &binres[1]);
-
-	encode_b58_check(binres, sizeof(binres), result);
-}
-
-void
-vg_encode_privkey(EC_KEY *pkey, int addrtype, char *result)
-{
-	unsigned char eckey_buf[128];
-	const BIGNUM *bn;
-	int nbytes;
-
-	bn = EC_KEY_get0_private_key(pkey);
-
-	eckey_buf[0] = addrtype;
-	nbytes = BN_num_bytes(bn);
-	assert(nbytes <= 32);
-	if (nbytes < 32)
-		memset(eckey_buf + 1, 0, 32 - nbytes);
-	BN_bn2bin(bn, &eckey_buf[33 - nbytes]);
-
-	encode_b58_check(eckey_buf, 33, result);
-}
-
-
-void
-dumphex(const unsigned char *src, size_t len)
-{
-	size_t i;
-	for (i = 0; i < len; i++) {
-		printf("%02x", src[i]);
-	}
-	printf("\n");
-}
-
-void
-dumpbn(const BIGNUM *bn)
-{
-	char *buf;
-	buf = BN_bn2hex(bn);
-	printf("%s\n", buf ? buf : "0");
-	if (buf)
-		OPENSSL_free(buf);
-}
 
 /*
  * Common code for execution helper
@@ -176,8 +57,6 @@ vg_exec_context_init(vg_context_t *vcp, vg_exec_context_t *vxcp)
 	assert(vxcp->vxc_bnctx);
 	vxcp->vxc_key = EC_KEY_new_by_curve_name(NID_secp256k1);
 	assert(vxcp->vxc_key);
-	vxcp->vxc_point = EC_POINT_new(EC_KEY_get0_group(vxcp->vxc_key));
-	assert(vxcp->vxc_point);
 	EC_KEY_precompute_mult(vxcp->vxc_key, vxcp->vxc_bnctx);
 	return 1;
 }
@@ -202,11 +81,7 @@ vg_exec_context_consolidate_key(vg_exec_context_t *vxcp)
 		BN_add(&vxcp->vxc_bntmp2,
 		       EC_KEY_get0_private_key(vxcp->vxc_key),
 		       &vxcp->vxc_bntmp);
-		EC_KEY_set_private_key(vxcp->vxc_key, &vxcp->vxc_bntmp2);
-		EC_POINT_mul(EC_KEY_get0_group(vxcp->vxc_key),
-			     vxcp->vxc_point, &vxcp->vxc_bntmp2,
-			     NULL, NULL, vxcp->vxc_bnctx);
-		EC_KEY_set_public_key(vxcp->vxc_key, vxcp->vxc_point);
+		vg_set_privkey(&vxcp->vxc_bntmp2, vxcp->vxc_key);
 		vxcp->vxc_delta = 0;
 	}
 }
@@ -443,11 +318,12 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 
 	if (vcp->vc_verbose > 0) {
 		if (vcp->vc_verbose > 1) {
-			/* Hexadecimal OpenSSL notation */
 			pend = key_buf;
 			len = i2o_ECPublicKey(pkey, &pend);
-			printf("Pubkey (ASN1): ");
+			printf("Pubkey (hex): ");
 			dumphex(key_buf, len);
+			printf("Privkey (hex): ");
+			dumpbn(EC_KEY_get0_private_key(pkey));
 			pend = key_buf;
 			len = i2d_ECPrivateKey(pkey, &pend);
 			printf("Privkey (ASN1): ");
@@ -502,24 +378,6 @@ vg_context_hash160_sort(vg_context_t *vcp, void *buf)
 }
 
 
-static const signed char b58_reverse_map[256] = {
-	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-	-1,  0,  1,  2,  3,  4,  5,  6,  7,  8, -1, -1, -1, -1, -1, -1,
-	-1,  9, 10, 11, 12, 13, 14, 15, 16, -1, 17, 18, 19, 20, 21, -1,
-	22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, -1, -1, -1, -1, -1,
-	-1, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, -1, 44, 45, 46,
-	47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, -1, -1, -1, -1, -1,
-	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
-};
-
 /*
  * Find the bignum ranges that produce a given prefix.
  */
@@ -551,7 +409,7 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 	p = strlen(pfx);
 
 	for (i = 0; i < p; i++) {
-		c = b58_reverse_map[(int)pfx[i]];
+		c = vg_b58_reverse_map[(int)pfx[i]];
 		if (c == -1) {
 			printf("Invalid character '%c' in prefix '%s'\n",
 			       pfx[i], pfx);
@@ -1674,7 +1532,7 @@ research:
 	return res;
 }
 
-int
+static int
 vg_prefix_hash160_sort(vg_context_t *vcp, void *buf)
 {
 	vg_prefix_context_t *vcpp = (vg_prefix_context_t *) vcp;
@@ -1883,10 +1741,10 @@ vg_regex_test(vg_exec_context_t *vxcp)
 		bn = bndiv;
 		bndiv = bnptmp;
 		d = BN_get_word(&bnrem);
-		b58[--p] = b58_alphabet[d];
+		b58[--p] = vg_b58_alphabet[d];
 	}
 	while (zpfx--) {
-		b58[--p] = b58_alphabet[0];
+		b58[--p] = vg_b58_alphabet[0];
 	}
 
 	/*
@@ -1971,78 +1829,4 @@ vg_regex_context_new(int addrtype, int privtype)
 		vcrp->vcr_nalloc = 0;
 	}
 	return &vcrp->base;
-}
-
-
-/*
- * Pattern file reader
- * Absolutely disgusting, unable to free the pattern list when it's done
- */
-
-int
-vg_read_file(FILE *fp, char ***result, int *rescount)
-{
-	int ret = 1;
-
-	char **patterns;
-	char *buf = NULL, *obuf, *pat;
-	const int blksize = 16*1024;
-	int nalloc = 16;
-	int npatterns = 0;
-	int count, pos;
-
-	patterns = (char**) malloc(sizeof(char*) * nalloc);
-	count = 0;
-	pos = 0;
-
-	while (1) {
-		obuf = buf;
-		buf = (char *) malloc(blksize);
-		if (!buf) {
-			ret = 0;
-			break;
-		}
-		if (pos < count) {
-			memcpy(buf, &obuf[pos], count - pos);
-		}
-		pos = count - pos;
-		count = fread(&buf[pos], 1, blksize - pos, fp);
-		if (count < 0) {
-			printf("Error reading file: %s\n", strerror(errno));
-			ret = 0;
-		}
-		if (count <= 0)
-			break;
-		count += pos;
-		pat = buf;
-
-		while (pos < count) {
-			if ((buf[pos] == '\r') || (buf[pos] == '\n')) {
-				buf[pos] = '\0';
-				if (pat) {
-					if (npatterns == nalloc) {
-						nalloc *= 2;
-						patterns = (char**)
-							realloc(patterns,
-								sizeof(char*) *
-								nalloc);
-					}
-					patterns[npatterns] = pat;
-					npatterns++;
-					pat = NULL;
-				}
-			}
-			else if (!pat) {
-				pat = &buf[pos];
-			}
-			pos++;
-		}
-
-		pos = pat ? (pat - buf) : count;
-	}			
-
-	*result = patterns;
-	*rescount = npatterns;
-
-	return ret;
 }
