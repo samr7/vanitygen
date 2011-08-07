@@ -20,26 +20,64 @@
  * This file contains an OpenCL kernel for performing certain parts of
  * the bitcoin address calculation process.
  *
- * Kernel: calc_addrs
+ * Kernel: ec_add_grid
  *
  * Inputs:
- * - Row of (sequential) EC points
- * - Array of column increment EC points (= rowsize * Pgenerator)
+ * - Row: Array of (sequential) EC points
+ * - Column: Array of column increment EC points (= rowsize * Pgenerator)
  *
  * Steps:
- * - For each row increment value C:
- *   - For each row point P:
- *      - Compute P + C
- *      - Normalize and hash with SHA256 and RIPEMD160
- *      - Store hash value in output array
+ * - Compute P = Row[x] + Column[y]
+ *   P is computed as numerator/denominator components Pxj, Pyj, Pz
+ *   Final values are: Px = Pxj / (Pz^2), Py = Pyj / (Pz^3)
+ *
+ *   The modular inverse of Pz is required to compute Px and Py, and
+ *   can be computed more efficiently in large batches.  This is done in
+ *   the next kernel heap_invert.
+ *
+ * - Store Pxj, Pyj to intermediate point buffer
+ * - Store Pz to z_heap
+ *
+ * Outputs:
+ * - Intermediate point buffer
+ * - Denominator buffer (z_heap)
+ *
+ * -------------------------------
+ * Kernel: heap_invert
+ *
+ * Inputs:
+ * - Denominator buffer (z_heap)
+ * - N = Batch size (power of 2)
+ *
+ * Steps:
+ * - Compute the product tree for N values in the denominator buffer
+ * - Compute the modular inverse of the root of the product tree
+ * - Multiply down the tree to compute the modular inverse of each leaf
+ *
+ * Outputs:
+ * - Modular inverse denominator buffer (z_heap)
+ *
+ * -------------------------------
+ * Kernel: hash_ec_point_get
+ *
+ * Inputs:
+ * - Intermediate point buffer
+ * - Modular inverse denominator buffer (z_heap)
+ *
+ * Steps:
+ * - Compute Px = Pxj * (1/Pz)^2
+ * - Compute Py = Pyj * (1/Pz)^3
+ * - Compute H = RIPEMD160(SHA256(0x04 | Px | Py))
  *
  * Output:
  * - Array of 20-byte address hash values
  *
- * Each instance of the kernel computes one full row.  With a typical
- * row size of 256 points, this makes each kernel instance very heavy.
- * This tradeoff is chosen in favor of batched modular inversion, which
- * substantially reduces the cost of performing modular inversion.
+ * -------------------------------
+ * Kernel: hash_ec_point_search_prefix
+ *
+ * Like hash_ec_point_get, but instead of storing the complete hash
+ * value to an output buffer, it searches a sorted list of ranges,
+ * and if a match is found, writes a flag to an output buffer.
  */
 
 
@@ -56,6 +94,41 @@
 #define load_be32(v) bswap32(v)
 #endif
 
+/* Explicit unrolling */
+#define unroll_5(a) do { a(0) a(1) a(2) a(3) a(4) } while (0)
+#define unroll_8(a) do { a(0) a(1) a(2) a(3) a(4) a(5) a(6) a(7) } while (0)
+#define unroll_8_sf(a) do { a(1) a(2) a(3) a(4) a(5) a(6) a(7) } while (0)
+#define unroll_8_sl(a) do { a(0) a(1) a(2) a(3) a(4) a(5) a(6) } while (0)
+#define unroll_8_reverse(a) \
+	do { a(7) a(6) a(5) a(4) a(3) a(2) a(1) a(0) } while (0)
+#define unroll_8_reverse_sl(a) \
+	do { a(7) a(6) a(5) a(4) a(3) a(2) a(1) } while (0)
+#define unroll_16(a) do {				\
+	a(0) a(1) a(2) a(3) a(4) a(5) a(6) a(7)		\
+	a(8) a(9) a(10) a(11) a(12) a(13) a(14) a(15)	\
+	} while (0)
+#define unroll_64(a) do {				\
+	a(0) a(1) a(2) a(3) a(4) a(5) a(6) a(7)		\
+	a(8) a(9) a(10) a(11) a(12) a(13) a(14) a(15)	\
+	a(16) a(17) a(18) a(19) a(20) a(21) a(22) a(23) \
+	a(24) a(25) a(26) a(27) a(28) a(29) a(30) a(31)	\
+	a(32) a(33) a(34) a(35) a(36) a(37) a(38) a(39) \
+	a(40) a(41) a(42) a(43) a(44) a(45) a(46) a(47) \
+	a(48) a(49) a(50) a(51) a(52) a(53) a(54) a(55) \
+	a(56) a(57) a(58) a(59) a(60) a(61) a(62) a(63) \
+	} while (0)
+
+#if defined(DEEP_PREPROC_UNROLL)
+#define iter_5(a) unroll_5(a)
+#define iter_8(a) unroll_8(a)
+#define iter_16(a) unroll_16(a)
+#define iter_64(a) unroll_64(a)
+#else
+#define iter_5(a) do {int _i; for (_i = 0; _i < 5; _i++) { a(_i) }} while (0)
+#define iter_8(a) do {int _i; for (_i = 0; _i < 8; _i++) { a(_i) }} while (0)
+#define iter_16(a) do {int _i; for (_i = 0; _i < 16; _i++) { a(_i) }} while (0)
+#define iter_64(a) do {int _i; for (_i = 0; _i < 64; _i++) { a(_i) }} while (0)
+#endif
 
 /*
  * BIGNUM mini-library
@@ -105,6 +178,21 @@ __constant bn_word mont_n0[2] = { 0xd2253531, 0xd838091d };
 #define bn_is_bit_set(bn, n) \
 	((((bn_word*)&bn)[n >> BN_WSHIFT]) & (1 << (n & (BN_WBITS-1))))
 
+#define bn_unroll(e) unroll_8(e)
+#define bn_unroll_sf(e)	unroll_8_sf(e)
+#define bn_unroll_sl(e)	unroll_8_sl(e)
+#define bn_unroll_reverse(e) unroll_8_reverse(e)
+#define bn_unroll_reverse_sl(e) unroll_8_reverse_sl(e)
+
+#define bn_unroll_arg(e, arg)				\
+	e(arg, 0) e(arg, 1) e(arg, 2) e(arg, 3)	\
+	e(arg, 4) e(arg, 5) e(arg, 6) e(arg, 7)
+#define bn_unroll_arg_sf(e, arg)			\
+	e(arg, 1) e(arg, 2) e(arg, 3)		\
+	e(arg, 4) e(arg, 5) e(arg, 6) e(arg, 7)
+
+#define bn_iter(e) iter_8(e)
+
 
 /*
  * Bitwise shift
@@ -113,60 +201,53 @@ __constant bn_word mont_n0[2] = { 0xd2253531, 0xd838091d };
 void
 bn_lshift1(bignum *bn)
 {
-	int i;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = (BN_NWORDS - 1); i > 0; i--)
-		bn->d[i] = (bn->d[i] << 1) | (bn->d[i-1] >> 31);
-	bn->d[i] <<= 1;
+#define bn_lshift1_inner1(i) \
+	bn->d[i] = (bn->d[i] << 1) | (bn->d[i-1] >> 31);
+
+	bn_unroll_reverse_sl(bn_lshift1_inner1);
+	bn->d[0] <<= 1;
 }
 
 void
 bn_rshift(bignum *bn, int shift)
 {
-	int i, wd, iws, iwr;
+	int wd, iws, iwr;
 	bn_word ihw, ilw;
 	iws = (shift & (BN_WBITS-1));
 	iwr = BN_WBITS - iws;
 	wd = (shift >> BN_WSHIFT);
 	ihw = (wd < BN_WBITS) ? bn->d[wd] : 0;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0, wd++; i < (BN_NWORDS-1); i++, wd++) {
-		ilw = ihw;
-		ihw = (wd < BN_WBITS) ? bn->d[wd] : 0;
-		bn->d[i] = (ilw >> iws) | (ihw << iwr);
-	}
-	bn->d[i] = (ihw >> iws);
+
+#define bn_rshift_inner1(i) \
+	wd++; \
+	ilw = ihw; \
+	ihw = (wd < BN_WBITS) ? bn->d[wd] : 0; \
+	bn->d[i] = (ilw >> iws) | (ihw << iwr);
+
+	bn_unroll_sl(bn_rshift_inner1);
+	bn->d[BN_NWORDS-1] = (ihw >> iws);
 }
 
 void
 bn_rshift1(bignum *bn)
 {
-	int i;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < (BN_NWORDS - 1); i++)
-		bn->d[i] = (bn->d[i+1] << 31) | (bn->d[i] >> 1);
-	bn->d[i] >>= 1;
+#define bn_rshift1_inner1(i) \
+	bn->d[i] = (bn->d[i+1] << 31) | (bn->d[i] >> 1);
+
+	bn_unroll_sl(bn_rshift1_inner1);
+	bn->d[BN_NWORDS-1] >>= 1;
 }
 
 void
 bn_rshift1_2(bignum *bna, bignum *bnb)
 {
-	int i;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < (BN_NWORDS - 1); i++) {
-		bna->d[i] = (bna->d[i+1] << 31) | (bna->d[i] >> 1);
+#define bn_rshift1_2_inner1(i) \
+		bna->d[i] = (bna->d[i+1] << 31) | (bna->d[i] >> 1); \
 		bnb->d[i] = (bnb->d[i+1] << 31) | (bnb->d[i] >> 1);
-	}
-	bna->d[i] >>= 1;
-	bnb->d[i] >>= 1;
+
+	bn_unroll_sl(bn_rshift1_2_inner1);
+	bna->d[BN_NWORDS-1] >>= 1;
+	bnb->d[BN_NWORDS-1] >>= 1;
 }
 
 
@@ -177,28 +258,26 @@ bn_rshift1_2(bignum *bna, bignum *bnb)
 int
 bn_ucmp_ge(bignum *a, bignum *b)
 {
-	int i, l = 0, g = 0;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = (BN_NWORDS - 1); i >= 0; i--) {
-		if (a->d[i] < b->d[i]) l |= (1 << i);
-		if (a->d[i] > b->d[i]) g |= (1 << i);
-	}
+	int l = 0, g = 0;
+
+#define bn_ucmp_ge_inner1(i) \
+	if (a->d[i] < b->d[i]) l |= (1 << i); \
+	if (a->d[i] > b->d[i]) g |= (1 << i);
+
+	bn_unroll_reverse(bn_ucmp_ge_inner1);
 	return (l > g) ? 0 : 1;
 }
 
 int
 bn_ucmp_ge_c(bignum *a, __constant bn_word *b)
 {
-	int i, l = 0, g = 0;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = (BN_NWORDS - 1); i >= 0; i--) {
-		if (a->d[i] < b[i]) l |= (1 << i);
-		if (a->d[i] > b[i]) g |= (1 << i);
-	}
+	int l = 0, g = 0;
+
+#define bn_ucmp_ge_c_inner1(i) \
+	if (a->d[i] < b[i]) l |= (1 << i); \
+	if (a->d[i] > b[i]) g |= (1 << i);
+
+	bn_unroll_reverse(bn_ucmp_ge_c_inner1);
 	return (l > g) ? 0 : 1;
 }
 
@@ -209,12 +288,12 @@ bn_ucmp_ge_c(bignum *a, __constant bn_word *b)
 void
 bn_neg(bignum *n)
 {
-	int i, c;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0, c = 1; i < BN_NWORDS; i++)
-		c = (n->d[i] = (~n->d[i]) + c) ? 0 : c;
+	int c = 1;
+
+#define bn_neg_inner1(i) \
+	c = (n->d[i] = (~n->d[i]) + c) ? 0 : c;
+
+	bn_unroll(bn_neg_inner1);
 }
 
 /*
@@ -234,30 +313,25 @@ bn_neg(bignum *n)
 	} while (0)
 
 bn_word
-bn_uadd_words_seq(bn_word *r, bn_word *a, bn_word *b, int count)
+bn_uadd_words_seq(bn_word *r, bn_word *a, bn_word *b)
 {
 	bn_word t, c = 0;
-	int i;
+
+#define bn_uadd_words_seq_inner1(i) \
+	bn_addc_word(r[i], a[i], b[i], t, c);
+
 	bn_add_word(r[0], a[0], b[0], t, c);
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 1; i < count; i++)
-		bn_addc_word(r[i], a[i], b[i], t, c);
+	bn_unroll_sf(bn_uadd_words_seq_inner1);
 	return c;
 }
 
 bn_word
-bn_uadd_words_c_seq(bn_word *r, bn_word *a, __constant bn_word *b, int count)
+bn_uadd_words_c_seq(bn_word *r, bn_word *a, __constant bn_word *b)
 {
 	bn_word t, c = 0;
-	int i;
+
 	bn_add_word(r[0], a[0], b[0], t, c);
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 1; i < count; i++)
-		bn_addc_word(r[i], a[i], b[i], t, c);
+	bn_unroll_sf(bn_uadd_words_seq_inner1);
 	return c;
 }
 
@@ -275,30 +349,25 @@ bn_uadd_words_c_seq(bn_word *r, bn_word *a, __constant bn_word *b, int count)
 	} while (0)
 
 bn_word
-bn_usub_words_seq(bn_word *r, bn_word *a, bn_word *b, int count)
+bn_usub_words_seq(bn_word *r, bn_word *a, bn_word *b)
 {
 	bn_word t, c = 0;
-	int i;
+
+#define bn_usub_words_seq_inner1(i) \
+	bn_subb_word(r[i], a[i], b[i], t, c);
+
 	bn_sub_word(r[0], a[0], b[0], t, c);
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 1; i < count; i++)
-		bn_subb_word(r[i], a[i], b[i], t, c);
+	bn_unroll_sf(bn_usub_words_seq_inner1);
 	return c;
 }
 
 bn_word
-bn_usub_words_c_seq(bn_word *r, bn_word *a, __constant bn_word *b, int count)
+bn_usub_words_c_seq(bn_word *r, bn_word *a, __constant bn_word *b)
 {
 	bn_word t, c = 0;
-	int i;
+
 	bn_sub_word(r[0], a[0], b[0], t, c);
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 1; i < count; i++)
-		bn_subb_word(r[i], a[i], b[i], t, c);
+	bn_unroll_sf(bn_usub_words_seq_inner1);
 	return c;
 }
 
@@ -306,115 +375,79 @@ bn_usub_words_c_seq(bn_word *r, bn_word *a, __constant bn_word *b, int count)
  * Add/subtract better suited for AMD's VLIW architecture
  */
 bn_word
-bn_uadd_words_vliw(bn_word *r, bn_word *a, bn_word *b, int count)
+bn_uadd_words_vliw(bn_word *r, bn_word *a, bn_word *b)
 {
 	bignum x;
 	bn_word c = 0, cp = 0;
-	int i;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < count; i++)
-		x.d[i] = a[i] + b[i];
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < count; i++) {
-		c |= (a[i] > x.d[i]) ? (1 << i) : 0;
-		cp |= (!~x.d[i]) ? (1 << i) : 0;
-	}
+
+#define bn_uadd_words_vliw_inner1(i) \
+	x.d[i] = a[i] + b[i];
+
+#define bn_uadd_words_vliw_inner2(i) \
+	c |= (a[i] > x.d[i]) ? (1 << i) : 0; \
+	cp |= (!~x.d[i]) ? (1 << i) : 0;
+
+#define bn_uadd_words_vliw_inner3(i) \
+	r[i] = x.d[i] + ((c >> i) & 1);
+
+	bn_unroll(bn_uadd_words_vliw_inner1);
+	bn_unroll(bn_uadd_words_vliw_inner2);
 	c = ((cp + (c << 1)) ^ cp);
 	r[0] = x.d[0];
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 1; i < count; i++)
-		r[i] = x.d[i] + ((c >> i) & 1);
-	return c >> count;
+	bn_unroll_sf(bn_uadd_words_vliw_inner3);
+	return c >> BN_NWORDS;
 }
 
 bn_word
-bn_uadd_words_c_vliw(bn_word *r, bn_word *a, __constant bn_word *b, int count)
+bn_uadd_words_c_vliw(bn_word *r, bn_word *a, __constant bn_word *b)
 {
 	bignum x;
 	bn_word c = 0, cp = 0;
-	int i;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < count; i++)
-		x.d[i] = a[i] + b[i];
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < count; i++) {
-		c |= (b[i] > x.d[i]) ? (1 << i) : 0;
-		cp |= (!~x.d[i]) ? (1 << i) : 0;
-	}
+
+	bn_unroll(bn_uadd_words_vliw_inner1);
+	bn_unroll(bn_uadd_words_vliw_inner2);
 	c = ((cp + (c << 1)) ^ cp);
 	r[0] = x.d[0];
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 1; i < count; i++)
-		r[i] = x.d[i] + ((c >> i) & 1);
-	return c >> count;
+	bn_unroll_sf(bn_uadd_words_vliw_inner3);
+	return c >> BN_NWORDS;
 }
 
 bn_word
-bn_usub_words_vliw(bn_word *r, bn_word *a, bn_word *b, int count)
+bn_usub_words_vliw(bn_word *r, bn_word *a, bn_word *b)
 {
 	bignum x;
 	bn_word c = 0, cp = 0;
-	int i;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < count; i++)
-		x.d[i] = a[i] - b[i];
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < count; i++) {
-		c |= (a[i] < b[i]) ? (1 << i) : 0;
-		cp |= (!x.d[i]) ? (1 << i) : 0;
-	}
+
+#define bn_usub_words_vliw_inner1(i) \
+	x.d[i] = a[i] - b[i];
+
+#define bn_usub_words_vliw_inner2(i) \
+	c |= (a[i] < b[i]) ? (1 << i) : 0; \
+	cp |= (!x.d[i]) ? (1 << i) : 0;
+
+#define bn_usub_words_vliw_inner3(i) \
+	r[i] = x.d[i] - ((c >> i) & 1);
+
+	bn_unroll(bn_usub_words_vliw_inner1);
+	bn_unroll(bn_usub_words_vliw_inner2);
 	c = ((cp + (c << 1)) ^ cp);
 	r[0] = x.d[0];
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 1; i < count; i++)
-		r[i] = x.d[i] - ((c >> i) & 1);
-	return c >> count;
+	bn_unroll_sf(bn_usub_words_vliw_inner3);
+	return c >> BN_NWORDS;
 }
 
 bn_word
-bn_usub_words_c_vliw(bn_word *r, bn_word *a, __constant bn_word *b, int count)
+bn_usub_words_c_vliw(bn_word *r, bn_word *a, __constant bn_word *b)
 {
 	bignum x;
 	bn_word c = 0, cp = 0;
-	int i;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < count; i++)
-		x.d[i] = a[i] - b[i];
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < count; i++) {
-		c |= (a[i] < b[i]) ? (1 << i) : 0;
-		cp |= (!x.d[i]) ? (1 << i) : 0;
-	}
+
+	bn_unroll(bn_usub_words_vliw_inner1);
+	bn_unroll(bn_usub_words_vliw_inner2);
 	c = ((cp + (c << 1)) ^ cp);
 	r[0] = x.d[0];
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 1; i < count; i++)
-		r[i] = x.d[i] - ((c >> i) & 1);
-	return c >> count;
+	bn_unroll_sf(bn_usub_words_vliw_inner3);
+	return c >> BN_NWORDS;
 }
 
 
@@ -430,10 +463,10 @@ bn_usub_words_c_vliw(bn_word *r, bn_word *a, __constant bn_word *b, int count)
 #define bn_usub_words_c bn_usub_words_c_seq
 #endif
 
-#define bn_uadd(r, a, b) bn_uadd_words((r)->d, (a)->d, (b)->d, BN_NWORDS)
-#define bn_uadd_c(r, a, b) bn_uadd_words_c((r)->d, (a)->d, b, BN_NWORDS)
-#define bn_usub(r, a, b) bn_usub_words((r)->d, (a)->d, (b)->d, BN_NWORDS)
-#define bn_usub_c(r, a, b) bn_usub_words_c((r)->d, (a)->d, b, BN_NWORDS)
+#define bn_uadd(r, a, b) bn_uadd_words((r)->d, (a)->d, (b)->d)
+#define bn_uadd_c(r, a, b) bn_uadd_words_c((r)->d, (a)->d, b)
+#define bn_usub(r, a, b) bn_usub_words((r)->d, (a)->d, (b)->d)
+#define bn_usub_c(r, a, b) bn_usub_words_c((r)->d, (a)->d, b)
 
 /*
  * Modular add/sub
@@ -483,68 +516,60 @@ bn_mod_lshift1(bignum *bn)
 		c = (s < c) ? p + 1 : p;	\
 		if (r < s) c++;			\
 	} while (0)
-
 void
 bn_mul_mont(bignum *r, bignum *a, bignum *b)
 {
 	bignum t;
 	bn_word tea, teb, c, p, s, m;
-	int i, j;
+
+#if !defined(VERY_EXPENSIVE_BRANCHES)
+	int q;
+#endif
 
 	c = 0;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (j = 0; j < BN_NWORDS; j++)
+#define bn_mul_mont_inner1(j)					\
 		bn_mul_word(t.d[j], a->d[j], b->d[0], c, p, s);
+	bn_unroll(bn_mul_mont_inner1);
 	tea = c;
 	teb = 0;
 
 	c = 0;
 	m = t.d[0] * mont_n0[0];
 	bn_mul_add_word(t.d[0], modulus[0], m, c, p, s);
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (j = 1; j < BN_NWORDS; j++) {
-		bn_mul_add_word(t.d[j], modulus[j], m, c, p, s);
+#define bn_mul_mont_inner2(j)						\
+		bn_mul_add_word(t.d[j], modulus[j], m, c, p, s);	\
 		t.d[j-1] = t.d[j];
-	}
+	bn_unroll_sf(bn_mul_mont_inner2);
 	t.d[BN_NWORDS-1] = tea + c;
 	tea = teb + ((t.d[BN_NWORDS-1] < c) ? 1 : 0);
 
-#if defined(UNROLL_MAX) && defined(VERY_EXPENSIVE_BRANCHES)
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 1; i < BN_NWORDS; i++) {
-		c = 0;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-		for (j = 0; j < BN_NWORDS; j++)
-			bn_mul_add_word(t.d[j], a->d[j], b->d[i], c, p, s);
-		tea += c;
-		teb = ((tea < c) ? 1 : 0);
-
-		c = 0;
-		m = t.d[0] * mont_n0[0];
-		bn_mul_add_word(t.d[0], modulus[0], m, c, p, s);
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-		for (j = 1; j < BN_NWORDS; j++) {
-			bn_mul_add_word(t.d[j], modulus[j], m, c, p, s);
-			t.d[j-1] = t.d[j];
-		}
-		t.d[BN_NWORDS-1] = tea + c;
-		tea = teb + ((t.d[BN_NWORDS-1] < c) ? 1 : 0);
-	}
+#define bn_mul_mont_inner3_1(i, j)					\
+		bn_mul_add_word(t.d[j], a->d[j], b->d[i], c, p, s);
+#define bn_mul_mont_inner3_2(i, j)					\
+		bn_mul_add_word(t.d[j], modulus[j], m, c, p, s);	\
+		t.d[j-1] = t.d[j];
+#define bn_mul_mont_inner3(i)				 \
+	c = 0;						 \
+	bn_unroll_arg(bn_mul_mont_inner3_1, i);		 \
+	tea += c;					 \
+	teb = ((tea < c) ? 1 : 0);			 \
+	c = 0;						 \
+	m = t.d[0] * mont_n0[0];			 \
+	bn_mul_add_word(t.d[0], modulus[0], m, c, p, s); \
+	bn_unroll_arg_sf(bn_mul_mont_inner3_2, i);	 \
+	t.d[BN_NWORDS-1] = tea + c;			 \
+	tea = teb + ((t.d[BN_NWORDS-1] < c) ? 1 : 0);
 
 #if defined(VERY_EXPENSIVE_BRANCHES)
+	bn_unroll_sf(bn_mul_mont_inner3);
 	c = tea | !bn_usub_c(r, &t, modulus);
 	if (!c)
 		*r = t;
+
 #else
+	for (q = 1; q < BN_NWORDS; q++) {
+		bn_mul_mont_inner3(q);
+	}
 	c = tea || (t.d[BN_NWORDS-1] >= modulus[BN_NWORDS-1]);
 	if (c) {
 		c = tea | !bn_usub_c(r, &t, modulus);
@@ -561,46 +586,54 @@ bn_from_mont(bignum *rb, bignum *b)
 #define WORKSIZE ((2*BN_NWORDS) + 1)
 	bn_word r[WORKSIZE];
 	bn_word m, c, p, s;
-	int i, j;
+#if defined(PRAGMA_UNROLL)
+	int i;
+#endif
+
 	/* Copy the input to the working area */
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++)
-		r[i] = b->d[i];
 	/* Zero the upper words */
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = BN_NWORDS; i < WORKSIZE; i++)
-		r[i] = 0;
+#define bn_from_mont_inner1(i)			\
+	r[i] = b->d[i];
+#define bn_from_mont_inner2(i)			\
+	r[BN_NWORDS+i] = 0;
+
+	bn_unroll(bn_from_mont_inner1);
+	bn_unroll(bn_from_mont_inner2);
+	r[WORKSIZE-1] = 0;
+
 	/* Multiply (long) by modulus */
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++) {
-		m = r[i] * mont_n0[0];
-		c = 0;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-		for (j = 0; j < BN_NWORDS; j++)
-			bn_mul_add_word(r[i+j], modulus[j], m, c, p, s);
-		r[BN_NWORDS + i] += c;
+#define bn_from_mont_inner3_1(i, j) \
+	bn_mul_add_word(r[i+j], modulus[j], m, c, p, s);
+
 #if !defined(VERY_EXPENSIVE_BRANCHES)
-		if (r[BN_NWORDS + i] < c)
-			r[BN_NWORDS + i + 1] += 1;
+#define bn_from_mont_inner3_2(i)		\
+	if (r[BN_NWORDS + i] < c)		\
+		r[BN_NWORDS + i + 1] += 1;
 #else
-		r[BN_NWORDS + i + 1] += (r[BN_NWORDS + i] < c) ? 1 : 0;
+#define bn_from_mont_inner3_2(i)				\
+	r[BN_NWORDS + i + 1] += (r[BN_NWORDS + i] < c) ? 1 : 0;
 #endif
-	}
-	c = bn_usub_words_c(rb->d, &r[BN_NWORDS], modulus, BN_NWORDS);
+
+#define bn_from_mont_inner3(i)			 \
+	m = r[i] * mont_n0[0];			 \
+	c = 0;					 \
+	bn_unroll_arg(bn_from_mont_inner3_1, i); \
+	r[BN_NWORDS + i] += c;			 \
+	bn_from_mont_inner3_2(i)
+
+#if !defined(PRAGMA_UNROLL)
+	bn_unroll(bn_from_mont_inner3);
+#else
+#pragma unroll 8
+	for (i = 0; i < BN_NWORDS; i++) { bn_from_mont_inner3(i) }
+#endif
+
+#define bn_from_mont_inner4(i)			\
+	rb->d[i] = r[BN_NWORDS + i];
+
+	c = bn_usub_words_c(rb->d, &r[BN_NWORDS], modulus);
 	if (c) {
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-		for (j = 0; j < BN_NWORDS; j++)
-			rb->d[j] = r[BN_NWORDS + j];
+		bn_unroll(bn_from_mont_inner4);
 	}
 }
 
@@ -672,6 +705,12 @@ bn_mod_inverse(bignum *r, bignum *n)
  * NOTE #2: Endianness of the OpenCL device makes no difference here.
  */
 
+#define hash256_unroll(a) unroll_8(a)
+#define hash160_unroll(a) unroll_5(a)
+#define hash256_iter(a) iter_8(a)
+#define hash160_iter(a) iter_5(a)
+
+
 /*
  * SHA-2 256
  *
@@ -708,12 +747,10 @@ __constant uint sha2_k[64] = {
 void
 sha2_256_init(uint *out)
 {
-	int i;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < 8; i++)
-		out[i] = sha2_init[i];
+#define sha2_256_init_inner_1(i) \
+	out[i] = sha2_init[i];
+
+	hash256_unroll(sha2_256_init_inner_1);
 }
 
 /* The state variable remapping is really contorted */
@@ -732,46 +769,48 @@ sha2_256_init(uint *out)
 void
 sha2_256_block(uint *out, uint *in)
 {
-	int i;
 	uint state[8], t1, t2;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
+#if defined(PRAGMA_UNROLL)
+	int i;
 #endif
-	for (i = 0; i < 8; i++)
-		state[i] = out[i];
-#ifdef UNROLL_MAX
-#pragma unroll 64
-#endif
-	for (i = 0; i < 64; i++) {
-		if (i >= 16) {
-			/* Advance the input window */
-			t1 = in[(i + 1) % 16];
-			t2 = in[(i + 14) % 16];
-			in[i % 16] += (in[(i + 9) % 16] +
-			     (rotate(t1, 25U) ^ rotate(t1, 14U) ^ (t1 >> 3)) +
-			     (rotate(t2, 15U) ^ rotate(t2, 13U) ^ (t2 >> 10)));
-		}
 
-		/* Compute the t1, t2 augmentations */
-		t1 = (sha2_stvar(state, i, 7) +
-		      sha2_s1(sha2_stvar(state, i, 4)) +
-		      sha2_ch(sha2_stvar(state, i, 4),
-			      sha2_stvar(state, i, 5),
-			      sha2_stvar(state, i, 6)) +
-		      sha2_k[i] +
-		      in[i % 16]);
-		t2 = (sha2_s0(sha2_stvar(state, i, 0)) +
-		      sha2_ma(sha2_stvar(state, i, 0),
-			      sha2_stvar(state, i, 1),
-			      sha2_stvar(state, i, 2)));
-		sha2_stvar(state, i, 3) += t1;
-		sha2_stvar(state, i, 7) = t1 + t2;
-	}
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
+#define sha2_256_block_inner_1(i) \
+	state[i] = out[i];
+	hash256_unroll(sha2_256_block_inner_1);
+
+#define sha2_256_block_inner_2(i) \
+	if (i >= 16) {							\
+		t1 = in[(i + 1) % 16];					\
+		t2 = in[(i + 14) % 16];					\
+		in[i % 16] += (in[(i + 9) % 16] +			\
+		       (rotate(t1, 25U) ^ rotate(t1, 14U) ^ (t1 >> 3)) + \
+		       (rotate(t2, 15U) ^ rotate(t2, 13U) ^ (t2 >> 10))); \
+	}								\
+	t1 = (sha2_stvar(state, i, 7) +					\
+	      sha2_s1(sha2_stvar(state, i, 4)) +			\
+	      sha2_ch(sha2_stvar(state, i, 4),				\
+		      sha2_stvar(state, i, 5),				\
+		      sha2_stvar(state, i, 6)) +			\
+	      sha2_k[i] +						\
+	      in[i % 16]);						\
+	t2 = (sha2_s0(sha2_stvar(state, i, 0)) +			\
+	      sha2_ma(sha2_stvar(state, i, 0),				\
+		      sha2_stvar(state, i, 1),				\
+		      sha2_stvar(state, i, 2)));			\
+	sha2_stvar(state, i, 3) += t1;					\
+	sha2_stvar(state, i, 7) = t1 + t2;				\
+
+#if !defined(PRAGMA_UNROLL)
+	unroll_64(sha2_256_block_inner_2);
+#else
+#pragma unroll 64
+	for (i = 0; i < 64; i++) { sha2_256_block_inner_2(i) }
 #endif
-	for (i = 0; i < 8; i++)
-		out[i] += state[i];
+
+#define sha2_256_block_inner_3(i) \
+	out[i] += state[i];
+
+	hash256_unroll(sha2_256_block_inner_3);
 }
 
 
@@ -859,54 +898,60 @@ __constant uchar ripemd160_rlp[] = {
 void
 ripemd160_init(uint *out)
 {
-	int i;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for(i = 0; i < 5; i++)
-		out[i] = ripemd160_iv[i];
+#define ripemd160_init_inner_1(i) \
+	out[i] = ripemd160_iv[i];
+
+	hash160_unroll(ripemd160_init_inner_1);
 }
 
 void
 ripemd160_block(uint *out, uint *in)
 {
 	uint vals[10], t;
+#if defined(PRAGMA_UNROLL)
 	int i;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
 #endif
-	for (i = 0; i < 5; i++)
-		vals[i] = vals[i + 5] = out[i];
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
+
+#define ripemd160_block_inner_1(i) \
+	vals[i] = vals[i + 5] = out[i];
+
+	hash160_unroll(ripemd160_block_inner_1);
+
+#define ripemd160_block_inner_p0(i)		\
+	ripemd160_round(i, in, vals, \
+			ripemd160_f0, ripemd160_f4, t);
+#define ripemd160_block_inner_p1(i)		\
+	ripemd160_round((16 + i), in, vals,		\
+			ripemd160_f1, ripemd160_f3, t);
+#define ripemd160_block_inner_p2(i)		\
+	ripemd160_round((32 + i), in, vals,		\
+			ripemd160_f2, ripemd160_f2, t);
+#define ripemd160_block_inner_p3(i)		\
+	ripemd160_round((48 + i), in, vals,		\
+			ripemd160_f3, ripemd160_f1, t);
+#define ripemd160_block_inner_p4(i)		\
+	ripemd160_round((64 + i), in, vals,		\
+			ripemd160_f4, ripemd160_f0, t);
+
+#if !defined(PRAGMA_UNROLL)
+	unroll_16(ripemd160_block_inner_p0);
+	unroll_16(ripemd160_block_inner_p1);
+	unroll_16(ripemd160_block_inner_p2);
+	unroll_16(ripemd160_block_inner_p3);
+	unroll_16(ripemd160_block_inner_p4);
+#else
+#pragma unroll 16
+	for (i = 0; i < 16; i++) { ripemd160_block_inner_p0(i); }
+#pragma unroll 16
+	for (i = 0; i < 16; i++) { ripemd160_block_inner_p1(i); }
+#pragma unroll 16
+	for (i = 0; i < 16; i++) { ripemd160_block_inner_p2(i); }
+#pragma unroll 16
+	for (i = 0; i < 16; i++) { ripemd160_block_inner_p3(i); }
+#pragma unroll 16
+	for (i = 0; i < 16; i++) { ripemd160_block_inner_p4(i); }
 #endif
-	for (i = 0; i < 16; i++)
-		ripemd160_round(i, in, vals,
-				ripemd160_f0, ripemd160_f4, t);
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 16; i < 32; i++)
-		ripemd160_round(i, in, vals,
-				ripemd160_f1, ripemd160_f3, t);
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 32; i < 48; i++)
-		ripemd160_round(i, in, vals,
-				ripemd160_f2, ripemd160_f2, t);
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 48; i < 64; i++)
-		ripemd160_round(i, in, vals,
-				ripemd160_f3, ripemd160_f1, t);
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 64; i < 80; i++)
-		ripemd160_round(i, in, vals,
-				ripemd160_f4, ripemd160_f0, t);
+
 	t = out[1] + vals[2] + vals[8];
 	out[1] = out[2] + vals[3] + vals[9];
 	out[2] = out[3] + vals[4] + vals[5];
@@ -953,176 +998,6 @@ test_mod_inverse(__global bignum *inv_out, __global bignum *nums_in,
 #endif  /* TEST_KERNELS */
 
 
-#if 0
-__kernel void
-calc_addrs(__global uint *hashes_out,
-	   __global bignum *z_heap, __global bignum *point_tmp,
-	   __global bignum *row_in, __global bignum *col_in, int ncols)
-{
-	uint hash1[16];
-	uint hash2[16];
-	uint wl, wh;
-	bignum rx, ry;
-	bignum x1, y1, a, b, c, d, e, z;
-	bn_word cy;
-	int i, o;
-
-	/* Load the row increment point */
-	o = get_global_id(0);
-	rx = col_in[2*o];
-	ry = col_in[(2*o) + 1];
-	hashes_out += (o * 5 * ncols);
-	z_heap += (o * 2 * ncols);
-	point_tmp += (o * 2 * ncols);
-
-	/*
-	 * Perform the EC point add.
-	 * Add the row increment to all row points.
-	 * Save the X,Y in the point temporary space.
-	 * Save the Z in the z_heap for modular inversion.
-	 */
-	for (i = 0; i < ncols; i++) {
-		x1 = row_in[(2*i)];
-		y1 = row_in[(2*i) + 1];
-
-		bn_mod_sub(&z, &x1, &rx);
-		z_heap[(ncols - 1) + i] = z;
-
-		bn_mod_sub(&b, &y1, &ry);
-		bn_mod_add(&c, &x1, &rx);
-		bn_mod_add(&d, &y1, &ry);
-		bn_mul_mont(&y1, &b, &b);
-		bn_mul_mont(&x1, &z, &z);
-		bn_mul_mont(&e, &c, &x1);
-		bn_mod_sub(&y1, &y1, &e);
-		point_tmp[2*i] = y1;
-		bn_mod_lshift1(&y1);
-		bn_mod_sub(&y1, &e, &y1);
-		bn_mul_mont(&y1, &y1, &b);
-		bn_mul_mont(&a, &x1, &z);
-		bn_mul_mont(&c, &d, &a);
-		bn_mod_sub(&y1, &y1, &c);
-		cy = 0;
-		if (bn_is_odd(y1))
-			cy = bn_uadd_c(&y1, &y1, modulus);
-		bn_rshift1(&y1);
-		y1.d[BN_NWORDS-1] |= (cy ? 0x80000000 : 0);
-		point_tmp[(2*i)+1] = y1;
-	}
-
-	/* Compute the product hierarchy in z_heap */
-	for (i = ncols - 1; i > 0; i--) {
-		a = z_heap[(i*2) - 1];
-		b = z_heap[(i*2)];
-		bn_mul_mont(&z, &a, &b);
-		z_heap[i-1] = z;
-	}
-
-	/* Invert the root, fix up 1/ZR -> R/Z */
-	z = z_heap[0];
-	bn_mod_inverse(&z, &z);
-
-	for (i = 0; i < BN_NWORDS; i++)
-		a.d[i] = mont_rr[i];
-	bn_mul_mont(&z, &z, &a);
-	bn_mul_mont(&z, &z, &a);
-	z_heap[0] = z;
-
-	for (i = 1; i < ncols; i++) {
-		a = z_heap[i - 1];
-		b = z_heap[(i*2) - 1];
-		c = z_heap[i*2];
-		bn_mul_mont(&z, &a, &c);
-		z_heap[(i*2) - 1] = z;
-		bn_mul_mont(&z, &a, &b);
-		z_heap[i*2] = z;
-	}
-
-	for (i = 0; i < ncols; i++) {
-		/*
-		 * Multiply the coordinates by the inverted Z values.
-		 * Stash the coordinates in the hash buffer.
-		 * SHA-2 requires big endian, and our intended hash input
-		 * is big-endian, so swapping is unnecessary, but
-		 * inserting the format byte in front causes a headache.
-		 */
-		a = z_heap[(ncols - 1) + i];
-		bn_mul_mont(&b, &a, &a);  /* Z^2 */
-		x1 = point_tmp[2*i];
-		bn_mul_mont(&x1, &x1, &b);  /* X / Z^2 */
-		bn_from_mont(&x1, &x1);
-
-		wh = 0x00000004;  /* POINT_CONVERSION_UNCOMPRESSED */
-		for (o = 0; o < BN_NWORDS; o++) {
-			wl = wh;
-			wh = x1.d[(BN_NWORDS - 1) - o];
-			hash1[o] = (wl << 24) | (wh >> 8);
-		}
-
-		bn_mul_mont(&a, &a, &b);  /* Z^3 */
-		y1 = point_tmp[(2*i)+1];
-		bn_mul_mont(&y1, &y1, &a);  /* Y / Z^3 */
-		bn_from_mont(&y1, &y1);
-
-		for (o = 0; o < BN_NWORDS; o++) {
-			wl = wh;
-			wh = y1.d[(BN_NWORDS - 1) - o];
-			hash1[BN_NWORDS + o] = (wl << 24) | (wh >> 8);
-		}
-
-		/*
-		 * Hash the first 64 bytes of the buffer
-		 */
-		sha2_256_init(hash2);
-		sha2_256_block(hash2, hash1);
-
-		/*
-		 * Hash the last byte of the buffer + SHA-2 padding
-		 */
-		hash1[0] = wh << 24 | 0x800000;
-		hash1[1] = 0;
-		hash1[2] = 0;
-		hash1[3] = 0;
-		hash1[4] = 0;
-		hash1[5] = 0;
-		hash1[6] = 0;
-		hash1[7] = 0;
-		hash1[8] = 0;
-		hash1[9] = 0;
-		hash1[10] = 0;
-		hash1[11] = 0;
-		hash1[12] = 0;
-		hash1[13] = 0;
-		hash1[14] = 0;
-		hash1[15] = 65 * 8;
-		sha2_256_block(hash2, hash1);
-
-		/*
-		 * Hash the SHA-2 result with RIPEMD160
-		 * Unfortunately, SHA-2 outputs big-endian, but
-		 * RIPEMD160 expects little-endian.  Need to swap!
-		 */
-		for (o = 0; o < 8; o++)
-			hash2[o] = bswap32(hash2[o]);
-		hash2[8] = bswap32(0x80000000);
-		hash2[9] = 0;
-		hash2[10] = 0;
-		hash2[11] = 0;
-		hash2[12] = 0;
-		hash2[13] = 0;
-		hash2[14] = 32 * 8;
-		hash2[15] = 0;
-		ripemd160_init(hash1);
-		ripemd160_block(hash1, hash2);
-
-		/* Copy the hash to the output buffer */
-		for (o = 0; o < 5; o++)
-			*(hashes_out++) = hash1[o];
-	}
-
-}
-#endif
-
 #define ACCESS_BUNDLE 1024
 #define ACCESS_STRIDE (ACCESS_BUNDLE/BN_NWORDS)
 
@@ -1144,17 +1019,16 @@ ec_add_grid(__global bn_word *points_out, __global bn_word *z_heap,
 	start = ((((2 * cell) / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 		 (cell % (ACCESS_STRIDE/2)));
 
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++)
-		x1.d[i] = row_in[start + (i*ACCESS_STRIDE)];
+#define ec_add_grid_inner_1(i) \
+	x1.d[i] = row_in[start + (i*ACCESS_STRIDE)];
+
+	bn_unroll(ec_add_grid_inner_1);
 	start += (ACCESS_STRIDE/2);
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++)
-		y1.d[i] = row_in[start + (i*ACCESS_STRIDE)];
+
+#define ec_add_grid_inner_2(i) \
+	y1.d[i] = row_in[start + (i*ACCESS_STRIDE)];
+
+	bn_unroll(ec_add_grid_inner_2);
 
 	bn_mod_sub(&z, &x1, &rx);
 
@@ -1162,11 +1036,10 @@ ec_add_grid(__global bn_word *points_out, __global bn_word *z_heap,
 	start = (((cell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 		 (cell % ACCESS_STRIDE));
 
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++)
-		z_heap[start + (i*ACCESS_STRIDE)] = z.d[i];
+#define ec_add_grid_inner_3(i) \
+	z_heap[start + (i*ACCESS_STRIDE)] = z.d[i];
+
+	bn_unroll(ec_add_grid_inner_3);
 
 	bn_mod_sub(&b, &y1, &ry);
 	bn_mod_add(&c, &x1, &rx);
@@ -1184,11 +1057,10 @@ ec_add_grid(__global bn_word *points_out, __global bn_word *z_heap,
 	start = ((((2 * cell) / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 		 (cell % (ACCESS_STRIDE/2)));
 
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++)
-		points_out[start + (i*ACCESS_STRIDE)] = y1.d[i];
+#define ec_add_grid_inner_4(i) \
+	points_out[start + (i*ACCESS_STRIDE)] = y1.d[i];
+
+	bn_unroll(ec_add_grid_inner_4);
 
 	bn_mod_lshift1(&y1);
 	bn_mod_sub(&y1, &e, &y1);
@@ -1203,49 +1075,49 @@ ec_add_grid(__global bn_word *points_out, __global bn_word *z_heap,
 	y1.d[BN_NWORDS-1] |= (cy ? 0x80000000 : 0);
 
 	start += (ACCESS_STRIDE/2);
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++)
-		points_out[start + (i*ACCESS_STRIDE)] = y1.d[i];
+
+	bn_unroll(ec_add_grid_inner_4);
 }
 
 __kernel void
 heap_invert(__global bn_word *z_heap, int batch)
 {
 	bignum a, b, c, z;
-	int i, j, off, lcell, hcell, start;
+	int i, off, lcell, hcell, start;
+
+#define heap_invert_inner_load_a(j)				\
+		a.d[j] = z_heap[start + j*ACCESS_STRIDE];
+#define heap_invert_inner_load_b(j)				\
+		b.d[j] = z_heap[start + j*ACCESS_STRIDE];
+#define heap_invert_inner_load_z(j)				\
+		z.d[j] = z_heap[start + j*ACCESS_STRIDE];
+#define heap_invert_inner_store_z(j)				\
+		z_heap[start + j*ACCESS_STRIDE] = z.d[j];
+#define heap_invert_inner_store_c(j)				\
+		z_heap[start + j*ACCESS_STRIDE] = c.d[j];
 
 	off = get_global_size(0);
 	lcell = get_global_id(0);
 	hcell = (off * batch) + lcell;
 	for (i = 0; i < (batch-1); i++) {
+
 		start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 			 (lcell % ACCESS_STRIDE));
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-		for (j = 0; j < BN_NWORDS; j++)
-			a.d[j] = z_heap[start + j*ACCESS_STRIDE];
+
+		bn_unroll(heap_invert_inner_load_a);
 
 		lcell += off;
 		start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 			 (lcell % ACCESS_STRIDE));
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-		for (j = 0; j < BN_NWORDS; j++)
-			b.d[j] = z_heap[start + j*ACCESS_STRIDE];
+
+		bn_unroll(heap_invert_inner_load_b);
 
 		bn_mul_mont(&z, &a, &b);
 
 		start = (((hcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 			 (hcell % ACCESS_STRIDE));
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-		for (j = 0; j < BN_NWORDS; j++)
-			z_heap[start + j*ACCESS_STRIDE] = z.d[j];
+
+		bn_unroll(heap_invert_inner_store_z);
 
 		lcell += off;
 		hcell += off;
@@ -1254,11 +1126,11 @@ heap_invert(__global bn_word *z_heap, int batch)
 	/* Invert the root, fix up 1/ZR -> R/Z */
 	bn_mod_inverse(&z, &z);
 
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++)
-		a.d[i] = mont_rr[i];
+#define heap_invert_inner_1(i)			\
+	a.d[i] = mont_rr[i];
+
+	bn_unroll(heap_invert_inner_1);
+
 	bn_mul_mont(&z, &z, &a);
 	bn_mul_mont(&z, &z, &a);
 
@@ -1266,57 +1138,33 @@ heap_invert(__global bn_word *z_heap, int batch)
 	hcell = lcell + (off << 1);
 	start = (((hcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 		 (hcell % ACCESS_STRIDE));
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (j = 0; j < BN_NWORDS; j++)
-		z_heap[start + j*ACCESS_STRIDE] = z.d[j];
+
+	bn_unroll(heap_invert_inner_store_z);
 
 	for (i = 0; i < (batch-1); i++) {
 		start = (((hcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 			 (hcell % ACCESS_STRIDE));
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-		for (j = 0; j < BN_NWORDS; j++)
-			z.d[j] = z_heap[start + j*ACCESS_STRIDE];
-
+		bn_unroll(heap_invert_inner_load_z);
 
 		start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 			 (lcell % ACCESS_STRIDE));
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-		for (j = 0; j < BN_NWORDS; j++)
-			a.d[j] = z_heap[start + j*ACCESS_STRIDE];
+		bn_unroll(heap_invert_inner_load_a);
 
 		lcell += off;
 		start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 			 (lcell % ACCESS_STRIDE));
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-		for (j = 0; j < BN_NWORDS; j++)
-			b.d[j] = z_heap[start + j*ACCESS_STRIDE];
+		bn_unroll(heap_invert_inner_load_b);
 
 		bn_mul_mont(&c, &a, &z);
 
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-		for (j = 0; j < BN_NWORDS; j++)
-			z_heap[start + j*ACCESS_STRIDE] = c.d[j];
+		bn_unroll(heap_invert_inner_store_c);
 
 		bn_mul_mont(&c, &b, &z);
 
 		lcell -= off;
 		start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 			 (lcell % ACCESS_STRIDE));
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-		for (j = 0; j < BN_NWORDS; j++)
-			z_heap[start + j*ACCESS_STRIDE] = c.d[j];
+		bn_unroll(heap_invert_inner_store_c);
 
 		lcell -= (off << 1);
 		hcell -= off;
@@ -1329,7 +1177,6 @@ hash_ec_point(uint *hash_out, __global bn_word *xy, __global bn_word *zip)
 	uint hash1[16], hash2[16];
 	bignum c, zi, zzi;
 	bn_word wh, wl;
-	int i;
 
 	/*
 	 * Multiply the coordinates by the inverted Z values.
@@ -1338,50 +1185,46 @@ hash_ec_point(uint *hash_out, __global bn_word *xy, __global bn_word *zip)
 	 * is big-endian, so swapping is unnecessary, but
 	 * inserting the format byte in front causes a headache.
 	 */
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++)
-		zi.d[i] = zip[i*ACCESS_STRIDE];
+#define hash_ec_point_inner_1(i)		\
+	zi.d[i] = zip[i*ACCESS_STRIDE];
+
+	bn_unroll(hash_ec_point_inner_1);
 
 	bn_mul_mont(&zzi, &zi, &zi);  /* 1 / Z^2 */
 
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++)
-		c.d[i] = xy[i*ACCESS_STRIDE];
+#define hash_ec_point_inner_2(i)		\
+	c.d[i] = xy[i*ACCESS_STRIDE];
+
+	bn_unroll(hash_ec_point_inner_2);
 
 	bn_mul_mont(&c, &c, &zzi);  /* X / Z^2 */
 	bn_from_mont(&c, &c);
 
 	wh = 0x00000004;  /* POINT_CONVERSION_UNCOMPRESSED */
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++) {
-		wl = wh;
-		wh = c.d[(BN_NWORDS - 1) - i];
-		hash1[i] = (wl << 24) | (wh >> 8);
-	}
+
+#define hash_ec_point_inner_3(i)		\
+	wl = wh;				\
+	wh = c.d[(BN_NWORDS - 1) - i];		\
+	hash1[i] = (wl << 24) | (wh >> 8);
+
+	bn_unroll(hash_ec_point_inner_3);
 
 	bn_mul_mont(&zzi, &zzi, &zi);  /* 1 / Z^3 */
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++)
-		c.d[i] = xy[(ACCESS_STRIDE/2) + i*ACCESS_STRIDE];
+
+#define hash_ec_point_inner_4(i)				\
+	c.d[i] = xy[(ACCESS_STRIDE/2) + i*ACCESS_STRIDE];
+
+	bn_unroll(hash_ec_point_inner_4);
+
 	bn_mul_mont(&c, &c, &zzi);  /* Y / Z^3 */
 	bn_from_mont(&c, &c);
 
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < BN_NWORDS; i++) {
-		wl = wh;
-		wh = c.d[(BN_NWORDS - 1) - i];
-		hash1[BN_NWORDS + i] = (wl << 24) | (wh >> 8);
-	}
+#define hash_ec_point_inner_5(i)			\
+	wl = wh;					\
+	wh = c.d[(BN_NWORDS - 1) - i];			\
+	hash1[BN_NWORDS + i] = (wl << 24) | (wh >> 8);
+
+	bn_unroll(hash_ec_point_inner_5);
 
 	/*
 	 * Hash the first 64 bytes of the buffer
@@ -1415,11 +1258,12 @@ hash_ec_point(uint *hash_out, __global bn_word *xy, __global bn_word *zip)
 	 * Unfortunately, SHA-2 outputs big-endian, but
 	 * RIPEMD160 expects little-endian.  Need to swap!
 	 */
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < 8; i++)
-		hash2[i] = bswap32(hash2[i]);
+
+#define hash_ec_point_inner_6(i)		\
+	hash2[i] = bswap32(hash2[i]);
+
+	hash256_unroll(hash_ec_point_inner_6);
+
 	hash2[8] = bswap32(0x80000000);
 	hash2[9] = 0;
 	hash2[10] = 0;
@@ -1457,11 +1301,10 @@ hash_ec_point_get(__global uint *hashes_out,
 	hashes_out += 5 * (i + get_global_id(0));
 
 	/* Output the hash in proper byte-order */
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < 5; i++)
-		hashes_out[i] = load_le32(hash[i]);
+#define hash_ec_point_get_inner_1(i)		\
+	hashes_out[i] = load_le32(hash[i]);
+
+	hash160_unroll(hash_ec_point_get_inner_1);
 }
 
 /*
@@ -1473,23 +1316,20 @@ int
 hash160_ucmp_g(uint *a, __global uint *bound)
 {
 	uint gv;
-	int i;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < 5; i++) {
-		gv = load_be32(bound[i]);
-		if (a[i] < gv) return -1;
+
+#define hash160_ucmp_g_inner_1(i) 		\
+		gv = load_be32(bound[i]);	\
+		if (a[i] < gv) return -1;	\
 		if (a[i] > gv) break;
-	}
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < 5; i++) {
-		gv = load_be32(bound[5+i]);
-		if (a[i] < gv) return 0;
+
+	hash160_iter(hash160_ucmp_g_inner_1);
+
+#define hash160_ucmp_g_inner_2(i)   		\
+		gv = load_be32(bound[5+i]);	\
+		if (a[i] < gv) return 0;	\
 		if (a[i] > gv) return 1;
-	}
+
+	hash160_iter(hash160_ucmp_g_inner_2);
 	return 0;
 }
 
@@ -1519,11 +1359,10 @@ hash_ec_point_search_prefix(__global uint *found,
 	 * - The byte-level convention of RIPEMD160 is little-endian
 	 * - We are comparing it in big-endian order
 	 */
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-	for (i = 0; i < 5; i++)
-		hash[i] = bswap32(hash[i]);
+#define hash_ec_point_search_prefix_inner_1(i)	\
+	hash[i] = bswap32(hash[i]);
+
+	hash160_unroll(hash_ec_point_search_prefix_inner_1);
 
 	/* Binary-search the target table for the hash we just computed */
 	for (high = ntargets - 1, low = 0, i = high >> 1;
@@ -1537,11 +1376,11 @@ hash_ec_point_search_prefix(__global uint *found,
 			found[0] = ((get_global_id(1) * get_global_size(0)) +
 				    get_global_id(0));
 			found[1] = i;
-#ifdef UNROLL_MAX
-#pragma unroll UNROLL_MAX
-#endif
-			for (p = 0; p < 5; p++)
-				found[p+2] = load_be32(hash[p]);
+
+#define hash_ec_point_search_prefix_inner_2(i)	\
+			found[i+2] = load_be32(hash[i]);
+
+			hash160_unroll(hash_ec_point_search_prefix_inner_2);
 			high = -1;
 		}
 	}

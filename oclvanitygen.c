@@ -384,15 +384,17 @@ vg_ocl_buildlog(vg_ocl_context_t *vocp, cl_program prog)
  */
 
 enum {
-	VG_OCL_UNROLL_LOOPS         = (1 << 0),
-	VG_OCL_EXPENSIVE_BRANCHES   = (1 << 1),
-	VG_OCL_DEEP_VLIW            = (1 << 2),
-	VG_OCL_AMD_BFI_INT          = (1 << 3),
-	VG_OCL_NV_VERBOSE           = (1 << 4),
-	VG_OCL_BROKEN               = (1 << 5),
-	VG_OCL_NO_BINARIES          = (1 << 6),
+	VG_OCL_DEEP_PREPROC_UNROLL  = (1 << 0),
+	VG_OCL_PRAGMA_UNROLL        = (1 << 1),
+	VG_OCL_EXPENSIVE_BRANCHES   = (1 << 2),
+	VG_OCL_DEEP_VLIW            = (1 << 3),
+	VG_OCL_AMD_BFI_INT          = (1 << 4),
+	VG_OCL_NV_VERBOSE           = (1 << 5),
+	VG_OCL_BROKEN               = (1 << 6),
+	VG_OCL_NO_BINARIES          = (1 << 7),
 
-	VG_OCL_OPTIMIZATIONS        = (VG_OCL_UNROLL_LOOPS |
+	VG_OCL_OPTIMIZATIONS        = (VG_OCL_DEEP_PREPROC_UNROLL |
+				       VG_OCL_PRAGMA_UNROLL |
 				       VG_OCL_EXPENSIVE_BRANCHES |
 				       VG_OCL_DEEP_VLIW |
 				       VG_OCL_AMD_BFI_INT),
@@ -406,13 +408,18 @@ vg_ocl_get_quirks(vg_ocl_context_t *vocp)
 	const char *dvn;
 	unsigned int quirks = 0;
 
-	/* Loop unrolling for devices other than CPUs */
-	if (!(vg_ocl_device_gettype(vocp->voc_ocldid) & CL_DEVICE_TYPE_CPU))
-		quirks |= VG_OCL_UNROLL_LOOPS;
+	quirks |= VG_OCL_DEEP_PREPROC_UNROLL;
 
 	vend = vg_ocl_device_getuint(vocp->voc_ocldid, CL_DEVICE_VENDOR_ID);
 	switch (vend) {
 	case 0x10de: /* NVIDIA */
+		/*
+		 * NVIDIA's compiler seems to take a really really long
+		 * time when using preprocessor unrolling, but works
+		 * well with pragma unroll.
+		 */
+		quirks &= ~VG_OCL_DEEP_PREPROC_UNROLL;
+		quirks |= VG_OCL_PRAGMA_UNROLL;
 		quirks |= VG_OCL_NV_VERBOSE;
 #ifdef WIN32
 		if (strcmp(vg_ocl_device_getstr(vocp->voc_ocldid,
@@ -427,6 +434,12 @@ vg_ocl_get_quirks(vg_ocl_context_t *vocp)
 #endif
 		break;
 	case 0x1002: /* AMD/ATI */
+		/*
+		 * AMD's compiler works best with preprocesor unrolling.
+		 * Pragma unroll is unreliable with AMD's compiler and
+		 * seems to crash based on whether the gods were smiling
+		 * when Catalyst was last installed/upgraded.
+		 */
 		if (vg_ocl_device_gettype(vocp->voc_ocldid) &
 		    CL_DEVICE_TYPE_GPU) {
 			quirks |= VG_OCL_EXPENSIVE_BRANCHES;
@@ -896,9 +909,12 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did,
 
 	end = 0;
 	optbuf[end] = '\0';
-	if (vocp->voc_quirks & VG_OCL_UNROLL_LOOPS)
+	if (vocp->voc_quirks & VG_OCL_DEEP_PREPROC_UNROLL)
 		end += snprintf(optbuf + end, sizeof(optbuf) - end,
-				"-DUNROLL_MAX=16 ");
+				"-DDEEP_PREPROC_UNROLL ");
+	if (vocp->voc_quirks & VG_OCL_PRAGMA_UNROLL)
+		end += snprintf(optbuf + end, sizeof(optbuf) - end,
+				"-DPRAGMA_UNROLL ");
 	if (vocp->voc_quirks & VG_OCL_EXPENSIVE_BRANCHES)
 		end += snprintf(optbuf + end, sizeof(optbuf) - end,
 				"-DVERY_EXPENSIVE_BRANCHES ");
