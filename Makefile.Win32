@@ -18,10 +18,10 @@ oclvanitygen.exe: oclvanitygen.obj pattern.obj util.obj winglue.obj
 	link /nologo /out:$@ $** $(LIBS) $(OPENCL_LIBS)
 
 .c.obj:
-	$(CC) $(CFLAGS) /c /Tp$< /Fo$@
+	@$(CC) /nologo $(CFLAGS) /c /Tp$< /Fo$@
 
 oclvanitygen.obj: oclvanitygen.c
-	$(CC) $(CFLAGS) $(OPENCL_INCLUDE) /c /Tpoclvanitygen.c /Fo$@
+	@$(CC) /nologo $(CFLAGS) $(OPENCL_INCLUDE) /c /Tpoclvanitygen.c /Fo$@
 
 clean:
 	del vanitygen.exe $(OBJS)
