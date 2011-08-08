@@ -205,8 +205,7 @@ int getopt(int argc, TCHAR *argv[], TCHAR *optstring)
 int __cdecl __initptw32(void);
 
 #if defined(_MSC_VER)
-#pragma section(".CRT$XIC",long,read)
-__declspec(allocate(".CRT$XIC")) static int (*pinit)(void) = __initptw32;
+class __constructme { public: __constructme() { __initptw32(); } } __vg_pinit;
 #define CONSTRUCTOR_TYPE __cdecl
 #elif defined(__GNUC__)
 #define CONSTRUCTOR_TYPE __cdecl __attribute__((constructor))
