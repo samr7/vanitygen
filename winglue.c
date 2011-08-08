@@ -84,7 +84,6 @@ gettimeofday(struct timeval *tv, struct timezone *tz)
 {
 	FILETIME ft;
 	unsigned __int64 tmpres = 0;
-	static int tzflag;
 
 	if (NULL != tv) {
 		GetSystemTimeAsFileTime(&ft);
@@ -202,12 +201,20 @@ int getopt(int argc, TCHAR *argv[], TCHAR *optstring)
  * its process attach function gets called before main().
  */
 #if defined(PTW32_STATIC_LIB)
-#pragma section(".CRT$XIC",long,read)
+
 int __cdecl __initptw32(void);
-#define _CRTALLOC(x) __declspec(allocate(x))
-_CRTALLOC(".CRT$XIC")
-static int (*pinit)(void) = __initptw32;
-int __cdecl
+
+#if defined(_MSC_VER)
+#pragma section(".CRT$XIC",long,read)
+__declspec(allocate(".CRT$XIC")) static int (*pinit)(void) = __initptw32;
+#define CONSTRUCTOR_TYPE __cdecl
+#elif defined(__GNUC__)
+#define CONSTRUCTOR_TYPE __cdecl __attribute__((constructor))
+#else
+#error "Unknown compiler -- can't mark constructor"
+#endif
+
+int CONSTRUCTOR_TYPE
 __initptw32(void)
 {
 	pthread_win32_process_attach_np();
