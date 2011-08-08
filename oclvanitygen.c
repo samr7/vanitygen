@@ -421,17 +421,6 @@ vg_ocl_get_quirks(vg_ocl_context_t *vocp)
 		quirks &= ~VG_OCL_DEEP_PREPROC_UNROLL;
 		quirks |= VG_OCL_PRAGMA_UNROLL;
 		quirks |= VG_OCL_NV_VERBOSE;
-#ifdef WIN32
-		if (strcmp(vg_ocl_device_getstr(vocp->voc_ocldid,
-						CL_DRIVER_VERSION),
-			   "270.81")) {
-			printf("WARNING: Known problems with certain "
-			       "NVIDIA driver versions\n"
-			       "WARNING: Use version 270.81 "
-			       "for best results\n");
-			quirks |= VG_OCL_BROKEN;
-		}
-#endif
 		break;
 	case 0x1002: /* AMD/ATI */
 		/*
@@ -743,7 +732,7 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 
 	if (vcp->vc_verbose > 0) {
 		if (fromsource && !patched) {
-			printf("Compiling kernel...");
+			printf("Compiling kernel, can take minutes...");
 			fflush(stdout);
 		}
 	}
