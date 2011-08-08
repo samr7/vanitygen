@@ -32,7 +32,7 @@
 #include "pattern.h"
 #include "util.h"
 
-const char *version = "0.16";
+const char *version = "0.17";
 
 typedef struct _vg_thread_context_s {
 	vg_exec_context_t		base;

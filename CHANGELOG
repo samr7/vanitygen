@@ -69,3 +69,13 @@ Version 0.16, released August 2 2011:
 	- Performance tweaks to oclvanitygen kernel
 	- Add safe mode flag (-S) to oclvanitygen to disable optimizations
 	- Add -X flag to set numerical key type (patch from jackjack-jj)
+
+Version 0.17, released August 8, 2011:
+	- Bugfix for private key encoder, could create encodings not
+	  accepted by showwallet branch bitcoin
+	- Remove oclvanitygen #pragma unroll by default, enable for NVIDIA
+	  (General performance improvement, hopeful resolution for crashing)
+	- Oclvanitygen work size configuration tweak for smaller GPUs
+	- New oclvanitygen add/subtract/compare functions for AMD Radeon
+	- Add support for AMD BFI_INT instruction in oclvanitygen hash functions
+	- Minor source code reorganization

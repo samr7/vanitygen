@@ -41,7 +41,7 @@
 #include "util.h"
 
 
-const char *version = "0.16";
+const char *version = "0.17";
 const int debug = 0;
 
 #define MAX_SLOT 2
