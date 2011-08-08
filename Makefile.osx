@@ -1,15 +1,15 @@
 LIBS=-lpcre -lcrypto -lm -lpthread
 CFLAGS=-ggdb -O3 -Wall
-OBJS=vanitygen.o oclvanitygen.o pattern.o
+OBJS=vanitygen.o oclvanitygen.o pattern.o util.o
 PROGS=vanitygen
 TESTS=
 
 all: $(PROGS)
 
-vanitygen: vanitygen.o pattern.o
+vanitygen: vanitygen.o pattern.o util.o
 	$(CC) $^ -o $@ $(CFLAGS) $(LIBS)
 
-oclvanitygen: oclvanitygen.o pattern.o
+oclvanitygen: oclvanitygen.o pattern.o util.o
 	$(CC) $^ -o $@ $(CFLAGS) $(LIBS) -framework OpenCL
 
 clean:
