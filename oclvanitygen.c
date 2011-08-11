@@ -2248,6 +2248,8 @@ usage(const char *name)
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
 "-X <version>  Generate address with the given version\n"
+"-e            Encrypt private keys, prompt for password\n"
+"-E <password> Encrypt private keys with <password> (UNSAFE)\n"
 "-p <platform> Select OpenCL platform\n"
 "-d <device>   Select OpenCL device\n"
 "-S            Safe mode, disable OpenCL loop unrolling optimizations\n"
@@ -2270,7 +2272,9 @@ main(int argc, char **argv)
 	int regex = 0;
 	int caseinsensitive = 0;
 	int opt;
+	char pwbuf[128];
 	int platformidx = -1, deviceidx = -1;
+	int prompt_password = 0;
 	char *seedfile = NULL;
 	FILE *fp = NULL;
 	char **patterns, *pend;
@@ -2285,9 +2289,10 @@ main(int argc, char **argv)
 	vg_context_t *vcp = NULL;
 	cl_device_id did;
 	const char *result_file = NULL;
+	const char *key_password = NULL;
 
 	while ((opt = getopt(argc, argv,
-			     "vqrikNTX:p:d:w:t:g:b:Sh?f:o:s:")) != -1) {
+			     "vqrikNTX:eE:p:d:w:t:g:b:Sh?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -2315,6 +2320,12 @@ main(int argc, char **argv)
 		case 'X':
 			addrtype = atoi(optarg);
 			privtype = 128 + addrtype;
+			break;
+		case 'e':
+			prompt_password = 1;
+			break;
+		case 'E':
+			key_password = optarg;
 			break;
 		case 'p':
 			platformidx = atoi(optarg);
@@ -2465,6 +2476,18 @@ main(int argc, char **argv)
 	if (!vcp->vc_npatterns) {
 		printf("No patterns to search\n");
 		return 1;
+	}
+
+	if (prompt_password) {
+		if (!vg_read_password(pwbuf, sizeof(pwbuf)))
+			return 1;
+		key_password = pwbuf;
+	}
+	vcp->vc_key_protect_pass = key_password;
+	if (key_password) {
+		if (!vg_check_password_complexity(key_password, verbose))
+			printf("WARNING: Protecting private keys with "
+			       "weak password\n");
 	}
 
 	if ((verbose > 0) && regex && (vcp->vc_npatterns > 1))

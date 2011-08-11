@@ -20,10 +20,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <math.h>
 
 #include <openssl/bn.h>
 #include <openssl/sha.h>
 #include <openssl/ripemd.h>
+#include <openssl/hmac.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #include "pattern.h"
 #include "util.h"
@@ -282,6 +286,313 @@ vg_decode_privkey(const char *b58encoded, EC_KEY *pkey, int *addrtype)
 	if (res)
 		*addrtype = ecpriv[0];
 	return res;
+}
+
+#define VG_PROTKEY_SALT_SIZE 4
+#define VG_PROTKEY_HMAC_SIZE 8
+#define VG_PROTKEY_HMAC_KEY_SIZE 16
+
+static int
+vg_protect_setup(EVP_CIPHER_CTX *ctx, unsigned char *hmac_out,
+		 const char *pass, const unsigned char *salt, int enc)
+{
+	unsigned char keymaterial[EVP_MAX_KEY_LENGTH + EVP_MAX_IV_LENGTH + 
+				  VG_PROTKEY_HMAC_KEY_SIZE];
+	const EVP_CIPHER *cipher;
+
+	cipher = EVP_aes_256_cbc();
+
+	PKCS5_PBKDF2_HMAC((const char *) pass, strlen(pass) + 1,
+			  salt, VG_PROTKEY_SALT_SIZE,
+			  4096,
+			  EVP_sha256(),
+			  cipher->key_len + cipher->iv_len +
+			  VG_PROTKEY_HMAC_KEY_SIZE,
+			  keymaterial);
+
+	if (!EVP_CipherInit(ctx, cipher,
+			    keymaterial,
+			    keymaterial + cipher->key_len,
+			    enc)) {
+		OPENSSL_cleanse(keymaterial, sizeof(keymaterial));
+		printf("ERROR: could not configure cipher\n");
+		return 0;
+	}
+
+	EVP_CIPHER_CTX_set_padding(ctx, 0);
+
+	memcpy(hmac_out,
+	       keymaterial + cipher->key_len + cipher->iv_len, 
+	       VG_PROTKEY_HMAC_KEY_SIZE);
+
+	OPENSSL_cleanse(keymaterial, sizeof(keymaterial));
+	return 1;
+}
+
+int
+vg_protect_encode_privkey(char *out,
+			  const EC_KEY *pkey, int keytype,
+			  const char *pass)
+{
+	unsigned char ecpriv[64];
+	unsigned char ecenc[64];
+	unsigned char hmac[EVP_MAX_MD_SIZE];
+	unsigned char salt[VG_PROTKEY_SALT_SIZE];
+	unsigned char hmac_key[VG_PROTKEY_HMAC_KEY_SIZE];
+	const BIGNUM *privkey;
+	EVP_CIPHER_CTX *ctx = NULL;
+	unsigned int hlen;
+	int opos, olen, oincr, nbytes;
+
+	privkey = EC_KEY_get0_private_key(pkey);
+	nbytes = BN_num_bytes(privkey);
+	if (nbytes < 32)
+		memset(ecpriv, 0, 32 - nbytes);
+	BN_bn2bin(privkey, ecpriv + 32 - nbytes);
+
+	ctx = EVP_CIPHER_CTX_new();
+
+	/*
+	 * The string representation of this protected key is
+	 * ridiculously long.  To save a few bytes, we will only
+	 * add four unique random bytes to the salt, out of the
+	 * eight mandated by PBKDF.  This should not reduce its
+	 * effectiveness.
+	 */
+	RAND_bytes(salt, VG_PROTKEY_SALT_SIZE);
+
+	if (!vg_protect_setup(ctx, hmac_key, pass, salt, 1)) {
+		EVP_CIPHER_CTX_free(ctx);
+		return 0;
+	}
+
+	hlen = sizeof(hmac);
+	HMAC(EVP_sha256(),
+	     hmac_key, VG_PROTKEY_HMAC_KEY_SIZE,
+	     ecpriv, 32,
+	     hmac, &hlen);
+
+	OPENSSL_cleanse(hmac_key, sizeof(hmac_key));
+
+	ecenc[0] = 136;
+	opos = 1;
+	olen = sizeof(ecenc) - opos;
+
+	oincr = olen;
+	EVP_EncryptUpdate(ctx, ecenc + opos, &oincr, ecpriv, 32);
+	opos += oincr;
+	olen -= oincr;
+
+	oincr = olen;
+	EVP_EncryptFinal(ctx, ecenc + opos, &oincr);
+	opos += oincr;
+
+	EVP_CIPHER_CTX_free(ctx);
+
+	memcpy(ecenc + opos, hmac, VG_PROTKEY_HMAC_SIZE);
+	opos += VG_PROTKEY_HMAC_SIZE;
+
+	memcpy(ecenc + opos, salt, VG_PROTKEY_SALT_SIZE);
+	opos += VG_PROTKEY_SALT_SIZE;
+
+	vg_b58_encode_check(ecenc, opos, out);
+	nbytes = strlen(out);
+	assert(nbytes == 67);
+	return nbytes;
+}
+
+
+int
+vg_protect_decode_privkey(EC_KEY *pkey, int *keytype,
+			  const char *encoded, const char *pass)
+{
+	unsigned char ecpriv[64];
+	unsigned char ecenc[64];
+	unsigned char hmac[EVP_MAX_MD_SIZE];
+	unsigned char salt[VG_PROTKEY_SALT_SIZE];
+	unsigned char hmac_key[VG_PROTKEY_HMAC_KEY_SIZE];
+	EVP_CIPHER_CTX *ctx = NULL;
+	BIGNUM bn;
+	unsigned int hlen;
+	int opos, olen, oincr;
+	int res;
+
+	res = vg_b58_decode_check(encoded, ecenc, sizeof(ecenc));
+	if (res != 45)
+		return 0;
+
+	memcpy(salt, ecenc + 41, VG_PROTKEY_SALT_SIZE);
+
+	ctx = EVP_CIPHER_CTX_new();
+
+	if (!vg_protect_setup(ctx, hmac_key, pass, salt, 0)) {
+		EVP_CIPHER_CTX_free(ctx);
+		return 0;
+	}
+
+	opos = 0;
+	olen = sizeof(ecenc) - opos;
+	oincr = olen;
+	EVP_DecryptUpdate(ctx, ecpriv + opos, &oincr, ecenc + 1, 32);
+	opos += oincr;
+	olen -= oincr;
+
+	oincr = olen;
+	EVP_DecryptFinal(ctx, ecpriv + opos, &oincr);
+	opos += oincr;
+
+	EVP_CIPHER_CTX_free(ctx);
+
+	hlen = sizeof(hmac);
+	HMAC(EVP_sha256(),
+	     hmac_key, VG_PROTKEY_HMAC_KEY_SIZE,
+	     ecpriv, 32,
+	     hmac, &hlen);
+
+	if (memcmp(ecenc + 33, hmac, VG_PROTKEY_HMAC_SIZE)) {
+		OPENSSL_cleanse(ecpriv, sizeof(ecpriv));
+		printf("ERROR: invalid password\n");
+		return 0;
+	}
+
+	BN_init(&bn);
+	BN_bin2bn(ecpriv, 32, &bn);
+	res = vg_set_privkey(&bn, pkey);
+	BN_clear_free(&bn);
+	OPENSSL_cleanse(ecpriv, sizeof(ecpriv));
+
+	if (res) {
+		switch(ecenc[0]) {
+		case 136:
+			*keytype = 128;
+			break;
+		default:
+			printf("Unrecognized private key type\n");
+			res = 0;
+			break;
+		}
+	}
+	return res;
+}
+
+int
+vg_read_password(char *buf, size_t size)
+{
+	return !EVP_read_pw_string(buf, size, "Enter new password:", 1);
+}
+
+
+/*
+ * Password complexity checker
+ * Heavily inspired by, but a simplification of "How Secure Is My Password?",
+ * http://howsecureismypassword.net/
+ */
+static unsigned char ascii_class[] = {
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	5, 4, 5, 4, 4, 4, 4, 5, 4, 4, 4, 4, 5, 4, 5, 5,
+	3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 5, 5, 5, 4, 5, 5,
+	4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+	2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 5, 5, 5, 4, 4,
+	5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 5, 5, 5, 5, 0,
+};
+
+int
+vg_check_password_complexity(const char *pass, int verbose)
+{
+	int i, len;
+	int classes[6] = { 0, };
+	const char *crackunit = "seconds";
+	int char_complexity = 0;
+	double crackops, cracktime;
+	int weak;
+
+	/*
+	 * This number reflects a resourceful attacker with
+	 * USD >$20K in 2011 hardware
+	 */
+	const int rate = 250000000;
+
+	/* Consider the password weak if it can be cracked in <1 year */
+	const int weak_threshold = (60*60*24*365);
+
+	len = strlen(pass);
+	for (i = 0; i < len; i++) {
+		if (pass[i] > sizeof(ascii_class))
+			/* FIXME: skip the rest of the UTF8 char */
+			classes[5]++;
+		else if (!ascii_class[(int)pass[i]])
+			continue;
+		else
+			classes[(int)ascii_class[(int)pass[i]] - 1]++;
+	}
+
+	if (classes[0])
+		char_complexity += 26;
+	if (classes[1])
+		char_complexity += 26;
+	if (classes[2])
+		char_complexity += 10;
+	if (classes[3])
+		char_complexity += 14;
+	if (classes[4])
+		char_complexity += 19;
+	if (classes[5])
+		char_complexity += 32;  /* oversimplified */
+
+	/* This assumes brute-force and oversimplifies the problem */
+	crackops = pow((double)char_complexity, (double)len);
+	cracktime = (crackops * (1 - (1/M_E))) / rate;
+	weak = (cracktime < weak_threshold);
+
+	if (cracktime > 60.0) {
+		cracktime /= 60.0;
+		crackunit = "minutes";
+		if (cracktime > 60.0) {
+			cracktime /= 60.0;
+			crackunit = "hours";
+			if (cracktime > 24.0) {
+				cracktime /= 24;
+				crackunit = "days";
+				if (cracktime > 365.0) {
+					cracktime /= 365.0;
+					crackunit = "years";
+				}
+			}
+		}
+	}
+
+	/* Complain by default about weak passwords */
+	if ((weak && (verbose > 0)) || (verbose > 1)) {
+		if (cracktime < 1.0) {
+			printf("Estimated password crack time: >1 %s\n",
+			       crackunit);
+		} else if (cracktime < 1000000) {
+			printf("Estimated password crack time: %.1f %s\n",
+			       cracktime, crackunit);
+		} else {
+			printf("Estimated password crack time: %e %s\n",
+			       cracktime, crackunit);
+		}
+		if (!classes[0] && !classes[1] && classes[2] &&
+		    !classes[3] && !classes[4] && !classes[5]) {
+			printf("WARNING: Password contains only numbers\n");
+		}
+		else if (!classes[2] && !classes[3] && !classes[4] &&
+			 !classes[5]) {
+			if (!classes[0] || !classes[1]) {
+				printf("WARNING: Password contains "
+				       "only %scase letters\n",
+				       classes[0] ? "lower" : "upper");
+			} else {
+				printf("WARNING: Password contains "
+				       "only letters\n");
+			}
+		}
+	}
+
+	return !weak;
 }
 
 

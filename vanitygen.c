@@ -449,6 +449,8 @@ usage(const char *name)
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
 "-X <version>  Generate address with the given version\n"
+"-e            Encrypt private keys, prompt for password\n"
+"-E <password> Encrypt private keys with <password> (UNSAFE)\n"
 "-t <threads>  Set number of worker threads (Default: number of CPUs)\n"
 "-f <file>     File containing list of patterns, one per line\n"
 "              (Use \"-\" as the file name for stdin)\n"
@@ -466,16 +468,19 @@ main(int argc, char **argv)
 	int caseinsensitive = 0;
 	int verbose = 1;
 	int remove_on_match = 1;
+	int prompt_password = 0;
 	int opt;
 	char *seedfile = NULL;
 	FILE *fp = NULL;
+	char pwbuf[128];
 	const char *result_file = NULL;
+	const char *key_password = NULL;
 	char **patterns;
 	int npatterns = 0;
 	int nthreads = 0;
 	vg_context_t *vcp = NULL;
 
-	while ((opt = getopt(argc, argv, "vqrikNTX:t:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqrikeE:NTX:t:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -503,6 +508,12 @@ main(int argc, char **argv)
 		case 'X':
 			addrtype = atoi(optarg);
 			privtype = 128 + addrtype;
+			break;
+		case 'e':
+			prompt_password = 1;
+			break;
+		case 'E':
+			key_password = optarg;
 			break;
 		case 't':
 			nthreads = atoi(optarg);
@@ -613,6 +624,18 @@ main(int argc, char **argv)
 	if (!vcp->vc_npatterns) {
 		printf("No patterns to search\n");
 		return 1;
+	}
+
+	if (prompt_password) {
+		if (!vg_read_password(pwbuf, sizeof(pwbuf)))
+			return 1;
+		key_password = pwbuf;
+	}
+	vcp->vc_key_protect_pass = key_password;
+	if (key_password) {
+		if (!vg_check_password_complexity(key_password, verbose))
+			printf("WARNING: Protecting private keys with "
+			       "weak password\n");
 	}
 
 	if ((verbose > 0) && regex && (vcp->vc_npatterns > 1))

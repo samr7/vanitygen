@@ -306,11 +306,26 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 	unsigned char key_buf[512], *pend;
 	char addr_buf[64];
 	char privkey_buf[128];
+	const char *keytype = "Privkey";
 	int len;
 
 	assert(EC_KEY_check_key(pkey));
 	vg_encode_address(pkey, vcp->vc_addrtype, addr_buf);
-	vg_encode_privkey(pkey, vcp->vc_privtype, privkey_buf);
+
+	if (vcp->vc_key_protect_pass) {
+		len = vg_protect_encode_privkey(privkey_buf,
+						pkey, vcp->vc_privtype,
+						vcp->vc_key_protect_pass);
+		if (len) {
+			keytype = "Protkey";
+		} else {
+			printf("ERROR: could not password-protect key\n");
+			vcp->vc_key_protect_pass = NULL;
+		}
+	}
+	if (!vcp->vc_key_protect_pass) {
+		vg_encode_privkey(pkey, vcp->vc_privtype, privkey_buf);
+	}
 
 	if (!vcp->vc_result_file || (vcp->vc_verbose > 0)) {
 		printf("\r%79s\rPattern: %s\n", "", pattern);
@@ -334,8 +349,8 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 
 	if (!vcp->vc_result_file || (vcp->vc_verbose > 0)) {
 		printf("Address: %s\n"
-		       "Privkey: %s\n",
-		       addr_buf, privkey_buf);
+		       "%s: %s\n",
+		       addr_buf, keytype, privkey_buf);
 	}
 
 	if (vcp->vc_result_file) {
@@ -347,8 +362,8 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 			fprintf(fp,
 				"Pattern: %s\n"
 				"Address: %s\n"
-				"Privkey: %s\n",
-				pattern, addr_buf, privkey_buf);
+				"%s: %s\n",
+				pattern, addr_buf, keytype, privkey_buf);
 			fclose(fp);
 		}
 	}

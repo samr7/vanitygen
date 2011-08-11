@@ -39,6 +39,14 @@ extern int vg_set_privkey(const BIGNUM *bnpriv, EC_KEY *pkey);
 extern int vg_decode_privkey(const char *b58encoded,
 			     EC_KEY *pkey, int *addrtype);
 
+extern int vg_protect_encode_privkey(char *out,
+				     const EC_KEY *pkey, int keytype,
+				     const char *pass);
+extern int vg_protect_decode_privkey(EC_KEY *pkey, int *keytype,
+				     const char *encoded, const char *pass);
+
+extern int vg_read_password(char *buf, size_t size);
+extern int vg_check_password_complexity(const char *pass, int verbose);
 
 extern int vg_read_file(FILE *fp, char ***result, int *rescount);
 

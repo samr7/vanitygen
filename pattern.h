@@ -75,6 +75,7 @@ struct _vg_context_s {
 	unsigned long long	vc_found;
 	double			vc_chance;
 	const char		*vc_result_file;
+	const char		*vc_key_protect_pass;
 	int			vc_remove_on_match;
 	int			vc_verbose;
 	vg_free_func_t		vc_free;
