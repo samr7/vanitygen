@@ -1872,8 +1872,8 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode, int verify,
 		if (vcp->vc_verbose > 0) {
 			printf("WARNING: Hardware verification mode enabled\n");
 		}
-		if (!worksize)
-			worksize = 1;
+		if (!nthreads)
+			nthreads = 1;
 		vocp->voc_verify_func[0] = vg_ocl_verify_k0;
 		vocp->voc_verify_func[1] = vg_ocl_verify_k1;
 	}
