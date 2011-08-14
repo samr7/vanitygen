@@ -16,6 +16,10 @@
  * along with Vanitygen.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#if defined(_WIN32)
+#define _USE_MATH_DEFINES
+#endif /* defined(_WIN32) */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
