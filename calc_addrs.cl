@@ -1152,14 +1152,33 @@ heap_invert(__global bn_word *z_heap, int batch)
 	bn_mul_mont(&z, &z, &a);
 	bn_mul_mont(&z, &z, &a);
 
-	lcell = (off * 2 * (batch - 2)) + get_global_id(0);
-	hcell = lcell + (off << 1);
-	start = (((hcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
-		 (hcell % ACCESS_STRIDE));
+	/* Unroll the first iteration to avoid a load/store on the root */
+	lcell -= (off << 1);
+	hcell -= (off << 1);
 
-	bn_unroll(heap_invert_inner_store_z);
+	start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+		 (lcell % ACCESS_STRIDE));
+	bn_unroll(heap_invert_inner_load_a);
 
-	for (i = 0; i < (batch-1); i++) {
+	lcell += off;
+	start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+		 (lcell % ACCESS_STRIDE));
+	bn_unroll(heap_invert_inner_load_b);
+
+	bn_mul_mont(&c, &a, &z);
+
+	bn_unroll(heap_invert_inner_store_c);
+
+	bn_mul_mont(&c, &b, &z);
+
+	lcell -= off;
+	start = (((lcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+		 (lcell % ACCESS_STRIDE));
+	bn_unroll(heap_invert_inner_store_c);
+
+	lcell -= (off << 1);
+
+	for (i = 0; i < (batch-2); i++) {
 		start = (((hcell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
 			 (hcell % ACCESS_STRIDE));
 		bn_unroll(heap_invert_inner_load_z);
