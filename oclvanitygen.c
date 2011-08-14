@@ -48,6 +48,7 @@ const int debug = 0;
 #define MAX_ARG 6
 #define MAX_KERNEL 3
 
+#define is_pow2(v) (!((v) & ((v)-1)))
 #define round_up_pow2(x, a) (((x) + ((a)-1)) & ~((a)-1))
 
 /* OpenCL address searching mode */
@@ -73,6 +74,8 @@ typedef struct _vg_ocl_context_s {
 
 	int				voc_pattern_rewrite;
 	int				voc_pattern_alloc;
+
+	vg_ocl_check_t			voc_verify_func[MAX_KERNEL];
 
 	pthread_t			voc_ocl_thread;
 	pthread_mutex_t			voc_lock;
@@ -1164,6 +1167,9 @@ vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow,
 
 	assert(!vocp->voc_oclkrnwait[slot]);
 
+	/* heap_invert() preconditions */
+	assert(is_pow2(invsize) && (invsize > 1));
+
 	val = invsize;
 	ret = clSetKernelArg(vocp->voc_oclkernel[slot][1],
 			     1,
@@ -1191,6 +1197,12 @@ vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow,
 		return 0;
 	}
 
+	if (vocp->voc_verify_func[0] &&
+	    !(vocp->voc_verify_func[0])(vocp, slot)) {
+		printf("ERROR: Kernel 0 failed verification test\n");
+		return 0;
+	}
+
 	ret = clEnqueueNDRangeKernel(vocp->voc_oclcmdq,
 				     vocp->voc_oclkernel[slot][1],
 				     1,
@@ -1206,6 +1218,12 @@ vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow,
 	clReleaseEvent(ev);
 	if (ret != CL_SUCCESS) {
 		vg_ocl_error(vocp, ret, "clWaitForEvents(NDRange,1)");
+		return 0;
+	}
+
+	if (vocp->voc_verify_func[1] &&
+	    !(vocp->voc_verify_func[1])(vocp, slot)) {
+		printf("ERROR: Kernel 1 failed verification test\n");
 		return 0;
 	}
 
@@ -1244,6 +1262,45 @@ vg_ocl_kernel_wait(vg_ocl_context_t *vocp, int slot)
 }
 
 
+INLINE void
+vg_ocl_get_bignum_raw(BIGNUM *bn, const unsigned char *buf)
+{
+	bn_expand(bn, 256);
+	memcpy(bn->d, buf, 32);
+	bn->top = (32 / sizeof(BN_ULONG));
+}
+
+INLINE void
+vg_ocl_put_bignum_raw(unsigned char *buf, const BIGNUM *bn)
+{
+	int bnlen = (bn->top * sizeof(BN_ULONG));
+	if (bnlen >= 32) {
+		memcpy(buf, bn->d, 32);
+	} else {
+		memcpy(buf, bn->d, bnlen);
+		memset(buf + bnlen, 0, 32 - bnlen);
+	}
+}
+
+#define ACCESS_BUNDLE 1024
+#define ACCESS_STRIDE (ACCESS_BUNDLE/8)
+
+void
+vg_ocl_get_bignum_tpa(BIGNUM *bn, const unsigned char *buf, int cell)
+{
+	unsigned char bnbuf[32];
+	int start, i;
+
+	start = (((cell / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+		 (cell % ACCESS_STRIDE));
+	for (i = 0; i < 8; i++)
+		memcpy(bnbuf+(i*4),
+		       buf + 4*(start + i*ACCESS_STRIDE),
+		       4);
+
+	vg_ocl_get_bignum_raw(bn, bnbuf);
+}
+
 /*
  * Absolutely disgusting.
  * We want points in Montgomery form, and it's a lot easier to read the
@@ -1259,20 +1316,29 @@ struct ec_point_st {
 };
 
 INLINE void
-vg_ocl_put_point(unsigned char *buf, EC_POINT *ppnt)
+vg_ocl_get_point(EC_POINT *ppnt, const unsigned char *buf)
 {
-	assert(ppnt->Z_is_one);
-	memcpy(buf, ppnt->X.d, 32);
-	memcpy(buf + 32, ppnt->Y.d, 32);
+	static const unsigned char mont_one[] = { 0x01,0x00,0x00,0x03,0xd1 };
+	vg_ocl_get_bignum_raw(&ppnt->X, buf);
+	vg_ocl_get_bignum_raw(&ppnt->Y, buf + 32);
+	if (!ppnt->Z_is_one) {
+		ppnt->Z_is_one = 1;
+		BN_bin2bn(mont_one, sizeof(mont_one), &ppnt->Z);
+	}
 }
 
-#define ACCESS_BUNDLE 1024
-#define ACCESS_STRIDE (ACCESS_BUNDLE/8)
-
 INLINE void
-vg_ocl_put_point_tpa(unsigned char *buf, int cell, EC_POINT *ppnt)
+vg_ocl_put_point(unsigned char *buf, const EC_POINT *ppnt)
 {
-	uint8_t pntbuf[64];
+	assert(ppnt->Z_is_one);
+	vg_ocl_put_bignum_raw(buf, &ppnt->X);
+	vg_ocl_put_bignum_raw(buf + 32, &ppnt->Y);
+}
+
+void
+vg_ocl_put_point_tpa(unsigned char *buf, int cell, const EC_POINT *ppnt)
+{
+	unsigned char pntbuf[64];
 	int start, i;
 
 	vg_ocl_put_point(pntbuf, ppnt);
@@ -1287,6 +1353,26 @@ vg_ocl_put_point_tpa(unsigned char *buf, int cell, EC_POINT *ppnt)
 		memcpy(buf + 4*(start + (ACCESS_STRIDE/2) + (i*ACCESS_STRIDE)),
 		       pntbuf+32+(i*4),
 		       4);
+}
+
+void
+vg_ocl_get_point_tpa(EC_POINT *ppnt, const unsigned char *buf, int cell)
+{
+	unsigned char pntbuf[64];
+	int start, i;
+
+	start = ((((2 * cell) / ACCESS_STRIDE) * ACCESS_BUNDLE) +
+		 (cell % (ACCESS_STRIDE/2)));
+	for (i = 0; i < 8; i++)
+		memcpy(pntbuf+(i*4),
+		       buf + 4*(start + i*ACCESS_STRIDE),
+		       4);
+	for (i = 0; i < 8; i++)
+		memcpy(pntbuf+32+(i*4),
+		       buf + 4*(start + (ACCESS_STRIDE/2) + (i*ACCESS_STRIDE)),
+		       4);
+
+	vg_ocl_get_point(ppnt, pntbuf);
 }
 
 void
@@ -1425,7 +1511,14 @@ vg_ocl_prefix_check(vg_ocl_context_t *vocp, int slot)
 		orig_delta = vxcp->vxc_delta;
 		vxcp->vxc_delta += found_delta;
 		vg_exec_context_calc_address(vxcp);
-		res = test_func(vxcp);
+
+		/* Make sure the GPU produced the expected hash */
+		res = 0;
+		if (!memcmp(vxcp->vxc_binres + 1,
+			    ocl_found_out + 2,
+			    20)) {
+			res = test_func(vxcp);
+		}
 		if (res == 0) {
 			/*
 			 * The match was not found in
@@ -1490,6 +1583,172 @@ vg_ocl_config_pattern(vg_ocl_context_t *vocp)
 	return vg_ocl_gethash_init(vocp);
 }
 
+
+/*
+ * Temporary buffer content verification functions
+ * This provides a simple test of the kernel, the OpenCL compiler,
+ * and the hardware.
+ */
+int
+vg_ocl_verify_temporary(vg_ocl_context_t *vocp, int slot, int z_inverted)
+{
+	vg_exec_context_t *vxcp = &vocp->base;
+	unsigned char *point_tmp = NULL, *z_heap = NULL;
+	unsigned char *ocl_points_in = NULL, *ocl_strides_in = NULL;
+	const EC_GROUP *pgroup;
+	EC_POINT *ppr = NULL, *ppc = NULL, *pps = NULL, *ppt = NULL;
+	BIGNUM bnz, bnez, bnm, *bnzc;
+	BN_CTX *bnctx = NULL;
+	BN_MONT_CTX *bnmont;
+	int ret = 0;
+	int mismatches = 0, mm_r;
+	int x, y, bx;
+	static const unsigned char raw_modulus[] = {
+		0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+		0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+		0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+		0xFF,0xFF,0xFF,0xFE,0xFF,0xFF,0xFC,0x2F
+	};
+
+	BN_init(&bnz);
+	BN_init(&bnez);
+	BN_init(&bnm);
+
+	bnctx = BN_CTX_new();
+	bnmont = BN_MONT_CTX_new();
+	pgroup = EC_KEY_get0_group(vxcp->vxc_key);
+	ppr = EC_POINT_new(pgroup);
+	ppc = EC_POINT_new(pgroup);
+	pps = EC_POINT_new(pgroup);
+	ppt = EC_POINT_new(pgroup);
+
+	if (!bnctx || !bnmont || !ppr || !ppc || !pps || !ppt) {
+		printf("ERROR: out of memory\n");
+		goto out;
+	}
+
+	BN_bin2bn(raw_modulus, sizeof(raw_modulus), &bnm);
+	BN_MONT_CTX_set(bnmont, &bnm, bnctx);
+
+	if (z_inverted) {
+		bnzc = &bnez;
+	} else {
+		bnzc = &pps->Z;
+	}
+
+	z_heap = (unsigned char *)
+		vg_ocl_map_arg_buffer(vocp, slot, 1, 0);
+	point_tmp = (unsigned char *)
+		vg_ocl_map_arg_buffer(vocp, slot, 2, 0);
+	ocl_points_in = (unsigned char *)
+		vg_ocl_map_arg_buffer(vocp, slot, 3, 0);
+	ocl_strides_in = (unsigned char *)
+		vg_ocl_map_arg_buffer(vocp, slot, 4, 0);
+
+	if (!z_heap || !point_tmp || !ocl_points_in || !ocl_strides_in) {
+		printf("ERROR: could not map OpenCL point buffers\n");
+		goto out;
+	}
+
+	for (y = 0; y < vocp->voc_ocl_rows; y++) {
+		vg_ocl_get_point(ppr, ocl_strides_in + (64*y));
+		bx = y * vocp->voc_ocl_cols;
+		mm_r = 0;
+
+		for (x = 0; x < vocp->voc_ocl_cols; x++) {
+			vg_ocl_get_point_tpa(ppc, ocl_points_in, x);
+			assert(ppr->Z_is_one && ppc->Z_is_one);
+			EC_POINT_add(pgroup, pps, ppc, ppr, bnctx);
+			assert(!pps->Z_is_one);
+			vg_ocl_get_point_tpa(ppt, point_tmp, bx + x);
+			vg_ocl_get_bignum_tpa(&bnz, z_heap, bx + x);
+			if (z_inverted) {
+				BN_mod_inverse(&bnez, &pps->Z, &bnm, bnctx);
+				BN_to_montgomery(&bnez, &bnez, bnmont, bnctx);
+				BN_to_montgomery(&bnez, &bnez, bnmont, bnctx);
+			}
+			if (BN_cmp(&ppt->X, &pps->X) ||
+			    BN_cmp(&ppt->Y, &pps->Y) ||
+			    BN_cmp(&bnz, bnzc)) {
+				mismatches++;
+				printf("Mismatch for kernel %d, "
+				       "offset %d (%d,%d)\n",
+				       z_inverted, bx + x, y, x);
+				if (!mm_r) {
+					mm_r = 1;
+					printf("Row X   : ");
+					dumpbn(&ppr->X);
+					printf("Row Y   : ");
+					dumpbn(&ppr->Y);
+				}
+
+				printf("Column X: ");
+				dumpbn(&ppc->X);
+				printf("Column Y: ");
+				dumpbn(&ppc->Y);
+
+				if (BN_cmp(&ppt->X, &pps->X)) {
+					printf("Expect X: ");
+					dumpbn(&pps->X);
+					printf("Device X: ");
+					dumpbn(&ppt->X);
+				}
+				if (BN_cmp(&ppt->Y, &pps->Y)) {
+					printf("Expect Y: ");
+					dumpbn(&pps->Y);
+					printf("Device Y: ");
+					dumpbn(&ppt->Y);
+				}
+				if (BN_cmp(&bnz, bnzc)) {
+					printf("Expect Z: ");
+					dumpbn(bnzc);
+					printf("Device Z: ");
+					dumpbn(&bnz);
+				}
+			}
+		}
+	}
+
+	ret = !mismatches;
+
+out:
+	if (z_heap)
+		vg_ocl_unmap_arg_buffer(vocp, slot, 1, z_heap);
+	if (point_tmp)
+		vg_ocl_unmap_arg_buffer(vocp, slot, 2, point_tmp);
+	if (ocl_points_in)
+		vg_ocl_unmap_arg_buffer(vocp, slot, 3, ocl_points_in);
+	if (ocl_strides_in)
+		vg_ocl_unmap_arg_buffer(vocp, slot, 4, ocl_strides_in);
+	if (ppr)
+		EC_POINT_free(ppr);
+	if (ppc)
+		EC_POINT_free(ppc);
+	if (pps)
+		EC_POINT_free(pps);
+	if (ppt)
+		EC_POINT_free(ppt);
+	BN_clear_free(&bnz);
+	BN_clear_free(&bnez);
+	BN_clear_free(&bnm);
+	if (bnmont)
+		BN_MONT_CTX_free(bnmont);
+	if (bnctx)
+		BN_CTX_free(bnctx);
+	return ret;
+}
+
+int
+vg_ocl_verify_k0(vg_ocl_context_t *vocp, int slot)
+{
+	return vg_ocl_verify_temporary(vocp, slot, 0);
+}
+
+int
+vg_ocl_verify_k1(vg_ocl_context_t *vocp, int slot)
+{
+	return vg_ocl_verify_temporary(vocp, slot, 1);
+}
 
 void *
 vg_opencl_thread(void *arg)
@@ -1578,7 +1837,7 @@ out:
  */
 
 void *
-vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
+vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode, int verify,
 	       int worksize, int nthreads, int nrows, int ncols, int invsize)
 {
 	int i;
@@ -1608,6 +1867,16 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
 
 	if (!vg_ocl_init(vcp, &ctx, did, safe_mode))
 		return NULL;
+
+	if (verify) {
+		if (vcp->vc_verbose > 0) {
+			printf("WARNING: Hardware verification mode enabled\n");
+		}
+		if (!worksize)
+			worksize = 1;
+		vocp->voc_verify_func[0] = vg_ocl_verify_k0;
+		vocp->voc_verify_func[1] = vg_ocl_verify_k1;
+	}
 
 	pkey = vxcp->vxc_key;
 	pgroup = EC_KEY_get0_group(pkey);
@@ -1700,7 +1969,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
 	round = nrows * ncols;
 
 	if (!invsize) {
-		invsize = 1;
+		invsize = 2;
 		while (!(round % (invsize << 1)) &&
 		       ((round / invsize) > full_threads))
 			invsize <<= 1;
@@ -1712,7 +1981,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode,
 		       round/invsize, invsize);
 	}
 
-	if ((round % invsize) || (invsize & (invsize-1))) {
+	if ((round % invsize) || !is_pow2(invsize) || (invsize < 2)) {
 		if (vcp->vc_verbose <= 1) {
 			printf("Grid size: %dx%d\n", ncols, nrows);
 			printf("Modular inverse: %d threads, %d ops each\n",
@@ -2257,6 +2526,7 @@ usage(const char *name)
 "-t <threads>  Set target thread count per multiprocessor\n"
 "-g <x>x<y>    Set grid size\n"
 "-b <invsize>  Set modular inverse ops per thread\n"
+"-V            Enable kernel/OpenCL/hardware verification (SLOW)\n"
 "-f <file>     File containing list of patterns, one per line\n"
 "              (Use \"-\" as the file name for stdin)\n"
 "-o <file>     Write pattern matches to <file>\n"
@@ -2285,6 +2555,7 @@ main(int argc, char **argv)
 	int nrows = 0, ncols = 0;
 	int invsize = 0;
 	int remove_on_match = 1;
+	int verify_mode = 0;
 	int safe_mode = 0;
 	vg_context_t *vcp = NULL;
 	cl_device_id did;
@@ -2292,7 +2563,7 @@ main(int argc, char **argv)
 	const char *key_password = NULL;
 
 	while ((opt = getopt(argc, argv,
-			     "vqrikNTX:eE:p:d:w:t:g:b:Sh?f:o:s:")) != -1) {
+			     "vqrikNTX:eE:p:d:w:t:g:b:VSh?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -2370,6 +2641,9 @@ main(int argc, char **argv)
 				       "a power of 2\n");
 				return 1;
 			}
+			break;
+		case 'V':
+			verify_mode = 1;
 			break;
 		case 'S':
 			safe_mode = 1;
@@ -2498,7 +2772,7 @@ main(int argc, char **argv)
 		return 1;
 	}
 
-	vg_opencl_loop(vcp, did, safe_mode,
+	vg_opencl_loop(vcp, did, safe_mode, verify_mode,
 		       worksize, nthreads, nrows, ncols, invsize);
 	return 0;
 }
