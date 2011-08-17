@@ -39,11 +39,29 @@ extern int vg_set_privkey(const BIGNUM *bnpriv, EC_KEY *pkey);
 extern int vg_decode_privkey(const char *b58encoded,
 			     EC_KEY *pkey, int *addrtype);
 
+enum {
+	VG_PROTKEY_DEFAULT = -1,
+	VG_PROTKEY_BRIEF_PBKDF2_4096_HMAC_SHA256_AES_256_CBC = 0,
+	VG_PROTKEY_PKCS_PBKDF2_4096_HMAC_SHA256_AES_256_CBC = 1,
+};
+
+#define VG_PROTKEY_MAX_B58 128
+
 extern int vg_protect_encode_privkey(char *out,
 				     const EC_KEY *pkey, int keytype,
+				     int parameter_group,
 				     const char *pass);
 extern int vg_protect_decode_privkey(EC_KEY *pkey, int *keytype,
 				     const char *encoded, const char *pass);
+
+extern int vg_pkcs8_encode_privkey(char *out, int outlen,
+				   const EC_KEY *pkey,
+				   const char *pass);
+extern int vg_pkcs8_decode_privkey(EC_KEY *pkey, const char *pem_in,
+				   const char *pass);
+
+extern int vg_decode_privkey_any(EC_KEY *pkey, int *addrtype,
+				 const char *input, const char *pass);
 
 extern int vg_read_password(char *buf, size_t size);
 extern int vg_check_password_complexity(const char *pass, int verbose);

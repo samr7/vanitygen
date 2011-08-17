@@ -305,7 +305,7 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 {
 	unsigned char key_buf[512], *pend;
 	char addr_buf[64];
-	char privkey_buf[128];
+	char privkey_buf[VG_PROTKEY_MAX_B58];
 	const char *keytype = "Privkey";
 	int len;
 
@@ -315,6 +315,7 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 	if (vcp->vc_key_protect_pass) {
 		len = vg_protect_encode_privkey(privkey_buf,
 						pkey, vcp->vc_privtype,
+						VG_PROTKEY_DEFAULT,
 						vcp->vc_key_protect_pass);
 		if (len) {
 			keytype = "Protkey";
