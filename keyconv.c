@@ -130,7 +130,7 @@ main(int argc, char **argv)
 
 	else if (pass_in) {
 		res = vg_protect_encode_privkey(ecprot, pkey, privtype,
-						parameter_group, pwbuf);
+						parameter_group, pass_in);
 
 		if (!res) {
 			fprintf(stderr, "ERROR: could not password-protect "
