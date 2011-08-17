@@ -507,6 +507,7 @@ vg_protect_crypt(int parameter_group,
 		salt_len = 8;
 		ciphertext_len = ((plaintext_len + cipher->block_size) /
 				  cipher->block_size) * cipher->block_size;
+		hmac_digest = NULL;
 	}
 
 	if (!enc && (data_in_len != (1 + ciphertext_len + hmac_len + salt_len)))
