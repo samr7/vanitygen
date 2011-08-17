@@ -474,7 +474,7 @@ vg_protect_crypt(int parameter_group,
 
 	if (parameter_group < 0) {
 		if (enc)
-			parameter_group = 3;
+			parameter_group = 0;
 		else
 			parameter_group = data_in[0];
 	} else {
