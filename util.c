@@ -416,9 +416,32 @@ PKCS5_PBKDF2_HMAC(const char *pass, int passlen,
 #endif  /* OPENSSL_VERSION_NUMBER < 0x10000000L */
 
 
-#define VG_PROTKEY_SALT_SIZE 4
-#define VG_PROTKEY_HMAC_SIZE 8
-#define VG_PROTKEY_HMAC_KEY_SIZE 16
+typedef struct {
+	int mode;
+	int iterations;
+	const EVP_MD *(*pbkdf_hash_getter)(void);
+	const EVP_CIPHER *(*cipher_getter)(void);
+} vg_protkey_parameters_t;
+
+static const vg_protkey_parameters_t protkey_parameters[] = {
+	{ 0, 4096,  EVP_sha256, EVP_aes_256_cbc },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 0, 0, NULL, NULL },
+	{ 1, 4096,  EVP_sha256, EVP_aes_256_cbc },
+};
 
 static int
 vg_protect_crypt(int parameter_group,
@@ -429,14 +452,14 @@ vg_protect_crypt(int parameter_group,
 	EVP_CIPHER_CTX *ctx = NULL;
 	unsigned char *salt;
 	unsigned char keymaterial[EVP_MAX_KEY_LENGTH + EVP_MAX_IV_LENGTH + 
-				  VG_PROTKEY_HMAC_KEY_SIZE];
+				  EVP_MAX_MD_SIZE];
 	unsigned char hmac[EVP_MAX_MD_SIZE];
 	int hmac_len = 0, hmac_keylen = 0;
 	int salt_len;
-	int pbkdf_iterations;
 	int plaintext_len = 32;
 	int ciphertext_len;
 	int pkcs7_padding = 1;
+	const vg_protkey_parameters_t *params;
 	const EVP_CIPHER *cipher;
 	const EVP_MD *pbkdf_digest;
 	const EVP_MD *hmac_digest;
@@ -451,7 +474,7 @@ vg_protect_crypt(int parameter_group,
 
 	if (parameter_group < 0) {
 		if (enc)
-			parameter_group = 0;
+			parameter_group = 3;
 		else
 			parameter_group = data_in[0];
 	} else {
@@ -459,29 +482,31 @@ vg_protect_crypt(int parameter_group,
 			goto out;
 	}
 
-	switch (parameter_group) {
-	case VG_PROTKEY_BRIEF_PBKDF2_4096_HMAC_SHA256_AES_256_CBC:
+	if (parameter_group > (sizeof(protkey_parameters) / 
+			       sizeof(protkey_parameters[0])))
+		goto out;
+	params = &protkey_parameters[parameter_group];
+
+	if (!params->iterations || !params->pbkdf_hash_getter)
+		goto out;
+
+	pbkdf_digest = params->pbkdf_hash_getter();
+	cipher = params->cipher_getter();
+
+	if (params->mode == 0) {
 		/* Brief encoding */
-		pbkdf_digest = EVP_sha256();
-		pbkdf_iterations = 4096;
 		salt_len = 4;
 		hmac_len = 8;
 		hmac_keylen = 16;
-		cipher = EVP_aes_256_cbc();
-		ciphertext_len = 32;
+		ciphertext_len = ((plaintext_len + cipher->block_size - 1) /
+				  cipher->block_size) * cipher->block_size;
 		pkcs7_padding = 0;
 		hmac_digest = EVP_sha256();
-		break;
-	case VG_PROTKEY_PKCS_PBKDF2_4096_HMAC_SHA256_AES_256_CBC:
-		/* PKCS#7 compliant encoding */
-		pbkdf_digest = EVP_sha256();
-		pbkdf_iterations = 4096;
+	} else {
+		/* PKCS-compliant encoding */
 		salt_len = 8;
-		cipher = EVP_aes_256_cbc();
-		ciphertext_len = 48;
-		break;
-	default:
-		goto out;
+		ciphertext_len = ((plaintext_len + cipher->block_size) /
+				  cipher->block_size) * cipher->block_size;
 	}
 
 	if (!enc && (data_in_len != (1 + ciphertext_len + hmac_len + salt_len)))
@@ -504,7 +529,7 @@ vg_protect_crypt(int parameter_group,
 
 	PKCS5_PBKDF2_HMAC((const char *) pass, strlen(pass) + 1,
 			  salt, salt_len,
-			  pbkdf_iterations,
+			  params->iterations,
 			  pbkdf_digest,
 			  cipher->key_len + cipher->iv_len + hmac_keylen,
 			  keymaterial);
@@ -595,6 +620,9 @@ vg_protect_encode_privkey(char *out,
 	unsigned char ecenc[128];
 	const BIGNUM *privkey;
 	int nbytes;
+	int restype;
+
+	restype = (keytype & 1) ? 79 : 32;
 
 	privkey = EC_KEY_get0_private_key(pkey);
 	nbytes = BN_num_bytes(privkey);
@@ -610,7 +638,7 @@ vg_protect_encode_privkey(char *out,
 
 	OPENSSL_cleanse(ecpriv, sizeof(ecpriv));
 
-	ecenc[0] = 32;
+	ecenc[0] = restype;
 	vg_b58_encode_check(ecenc, nbytes + 1, out);
 	nbytes = strlen(out);
 	return nbytes;
@@ -624,13 +652,18 @@ vg_protect_decode_privkey(EC_KEY *pkey, int *keytype,
 	unsigned char ecpriv[64];
 	unsigned char ecenc[128];
 	BIGNUM bn;
+	int restype;
 	int res;
 
 	res = vg_b58_decode_check(encoded, ecenc, sizeof(ecenc));
 
-	if ((res < 2) ||
-	    ((ecenc[0] & 0xe0) != 32) ||
-	    (res > sizeof(ecenc))) {
+	if ((res < 2) || (res > sizeof(ecenc)))
+		return 0;
+
+	switch (ecenc[0]) {
+	case 32:  restype = 128; break;
+	case 79:  restype = 239; break;
+	default:
 		return 0;
 	}
 
@@ -649,7 +682,7 @@ vg_protect_decode_privkey(EC_KEY *pkey, int *keytype,
 		OPENSSL_cleanse(ecpriv, sizeof(ecpriv));
 	}
 
-	*keytype = 128;
+	*keytype = restype;
 	return res;
 }
 
