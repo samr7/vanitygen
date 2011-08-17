@@ -240,13 +240,13 @@ vg_thread_loop(void *arg)
 	for (i = 0; i < ptarraysize; i++) {
 		ppnt[i] = EC_POINT_new(pgroup);
 		if (!ppnt[i]) {
-			printf("ERROR: out of memory?\n");
+			fprintf(stderr, "ERROR: out of memory?\n");
 			exit(1);
 		}
 	}
 	pbatchinc = EC_POINT_new(pgroup);
 	if (!pbatchinc) {
-		printf("ERROR: out of memory?\n");
+		fprintf(stderr, "ERROR: out of memory?\n");
 		exit(1);
 	}
 
@@ -408,13 +408,14 @@ start_threads(vg_context_t *vcp, int nthreads)
 		/* Determine the number of threads */
 		nthreads = count_processors();
 		if (nthreads <= 0) {
-			printf("ERROR: could not determine processor count\n");
+			fprintf(stderr,
+				"ERROR: could not determine processor count\n");
 			nthreads = 1;
 		}
 	}
 
 	if (vcp->vc_verbose > 1) {
-		printf("Using %d worker thread(s)\n", nthreads);
+		fprintf(stderr, "Using %d worker thread(s)\n", nthreads);
 	}
 
 	while (--nthreads) {
@@ -430,7 +431,7 @@ start_threads(vg_context_t *vcp, int nthreads)
 void
 usage(const char *name)
 {
-	printf(
+	fprintf(stderr,
 "Vanitygen %s (" OPENSSL_VERSION_TEXT ")\n"
 "Usage: %s [-vqrikNT] [-t <threads>] [-f <filename>|-] [<pattern>...]\n"
 "Generates a bitcoin receiving address matching <pattern>, and outputs the\n"
@@ -518,13 +519,15 @@ main(int argc, char **argv)
 		case 't':
 			nthreads = atoi(optarg);
 			if (nthreads == 0) {
-				printf("Invalid thread count '%s'\n", optarg);
+				fprintf(stderr,
+					"Invalid thread count '%s'\n", optarg);
 				return 1;
 			}
 			break;
 		case 'f':
 			if (fp) {
-				printf("Multiple files specified\n");
+				fprintf(stderr,
+					"Multiple files specified\n");
 				return 1;
 			}
 			if (!strcmp(optarg, "-")) {
@@ -532,22 +535,25 @@ main(int argc, char **argv)
 			} else {
 				fp = fopen(optarg, "r");
 				if (!fp) {
-					printf("Could not open %s: %s\n",
-					       optarg, strerror(errno));
+					fprintf(stderr,
+						"Could not open %s: %s\n",
+						optarg, strerror(errno));
 					return 1;
 				}
 			}
 			break;
 		case 'o':
 			if (result_file) {
-				printf("Multiple output files specified\n");
+				fprintf(stderr,
+					"Multiple output files specified\n");
 				return 1;
 			}
 			result_file = optarg;
 			break;
 		case 's':
 			if (seedfile != NULL) {
-				printf("Multiple RNG seeds specified\n");
+				fprintf(stderr,
+					"Multiple RNG seeds specified\n");
 				return 1;
 			}
 			seedfile = optarg;
@@ -561,14 +567,16 @@ main(int argc, char **argv)
 #if OPENSSL_VERSION_NUMBER < 0x10000000L
 	/* Complain about older versions of OpenSSL */
 	if (verbose > 0) {
-		printf("WARNING: Built with " OPENSSL_VERSION_TEXT "\n"
-		       "WARNING: Use OpenSSL 1.0.0d+ for best performance\n");
+		fprintf(stderr,
+			"WARNING: Built with " OPENSSL_VERSION_TEXT "\n"
+			"WARNING: Use OpenSSL 1.0.0d+ for best performance\n");
 	}
 #endif
 
 	if (caseinsensitive && regex)
-		printf("WARNING: case insensitive mode incompatible with "
-		       "regular expressions\n");
+		fprintf(stderr,
+			"WARNING: case insensitive mode incompatible with "
+			"regular expressions\n");
 
 	if (seedfile) {
 		opt = -1;
@@ -581,17 +589,18 @@ main(int argc, char **argv)
 #endif
 		opt = RAND_load_file(seedfile, opt);
 		if (!opt) {
-			printf("Could not load RNG seed %s\n", optarg);
+			fprintf(stderr, "Could not load RNG seed %s\n", optarg);
 			return 1;
 		}
 		if (verbose > 0) {
-			printf("Read %d bytes from RNG seed file\n", opt);
+			fprintf(stderr,
+				"Read %d bytes from RNG seed file\n", opt);
 		}
 	}
 
 	if (fp) {
 		if (!vg_read_file(fp, &patterns, &npatterns)) {
-			printf("Failed to load pattern file\n");
+			fprintf(stderr, "Failed to load pattern file\n");
 			return 1;
 		}
 		if (fp != stdin)
@@ -622,7 +631,7 @@ main(int argc, char **argv)
 		return 1;
 
 	if (!vcp->vc_npatterns) {
-		printf("No patterns to search\n");
+		fprintf(stderr, "No patterns to search\n");
 		return 1;
 	}
 
@@ -634,12 +643,14 @@ main(int argc, char **argv)
 	vcp->vc_key_protect_pass = key_password;
 	if (key_password) {
 		if (!vg_check_password_complexity(key_password, verbose))
-			printf("WARNING: Protecting private keys with "
-			       "weak password\n");
+			fprintf(stderr,
+				"WARNING: Protecting private keys with "
+				"weak password\n");
 	}
 
 	if ((verbose > 0) && regex && (vcp->vc_npatterns > 1))
-		printf("Regular expressions: %ld\n", vcp->vc_npatterns);
+		fprintf(stderr,
+			"Regular expressions: %ld\n", vcp->vc_npatterns);
 
 	if (!start_threads(vcp, nthreads))
 		return 1;

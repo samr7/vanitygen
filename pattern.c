@@ -320,7 +320,8 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 		if (len) {
 			keytype = "Protkey";
 		} else {
-			printf("ERROR: could not password-protect key\n");
+			fprintf(stderr,
+				"ERROR: could not password-protect key\n");
 			vcp->vc_key_protect_pass = NULL;
 		}
 	}
@@ -357,8 +358,9 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 	if (vcp->vc_result_file) {
 		FILE *fp = fopen(vcp->vc_result_file, "a");
 		if (!fp) {
-			printf("ERROR: could not open result file: %s\n",
-			       strerror(errno));
+			fprintf(stderr,
+				"ERROR: could not open result file: %s\n",
+				strerror(errno));
 		} else {
 			fprintf(fp,
 				"Pattern: %s\n"
@@ -427,8 +429,9 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 	for (i = 0; i < p; i++) {
 		c = vg_b58_reverse_map[(int)pfx[i]];
 		if (c == -1) {
-			printf("Invalid character '%c' in prefix '%s'\n",
-			       pfx[i], pfx);
+			fprintf(stderr,
+				"Invalid character '%c' in prefix '%s'\n",
+				pfx[i], pfx);
 			goto out;
 		}
 		if (i == zero_prefix) {
@@ -436,7 +439,8 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 				/* Add another zero prefix */
 				zero_prefix++;
 				if (zero_prefix > 19) {
-					printf("Prefix '%s' is too long\n",
+					fprintf(stderr,
+						"Prefix '%s' is too long\n",
 						pfx);
 					goto out;
 				}
@@ -487,7 +491,7 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 			 * Do not allow the prefix to constrain the
 			 * check value, this is ridiculous.
 			 */
-			printf("Prefix '%s' is too long\n", pfx);
+			fprintf(stderr, "Prefix '%s' is too long\n", pfx);
 			goto out;
 		}
 
@@ -1163,8 +1167,9 @@ vg_prefix_add(avl_root_t *rootp, const char *pattern, BIGNUM *low, BIGNUM *high)
 		vp->vp_high = high;
 		vp2 = vg_prefix_avl_insert(rootp, vp);
 		if (vp2 != NULL) {
-			printf("Prefix '%s' ignored, overlaps '%s'\n",
-			       pattern, vp2->vp_pattern);
+			fprintf(stderr,
+				"Prefix '%s' ignored, overlaps '%s'\n",
+				pattern, vp2->vp_pattern);
 			vg_prefix_free(vp);
 			vp = NULL;
 		}
@@ -1343,10 +1348,11 @@ vg_prefix_context_next_difficulty(vg_prefix_context_t *vcpp,
 	dbuf = BN_bn2dec(bntmp2);
 	if (vcpp->base.vc_verbose > 0) {
 		if (vcpp->base.vc_npatterns > 1)
-			printf("Next match difficulty: %s (%ld prefixes)\n",
-			       dbuf, vcpp->base.vc_npatterns);
+			fprintf(stderr,
+				"Next match difficulty: %s (%ld prefixes)\n",
+				dbuf, vcpp->base.vc_npatterns);
 		else
-			printf("Difficulty: %s\n", dbuf);
+			fprintf(stderr, "Difficulty: %s\n", dbuf);
 	}
 	vcpp->base.vc_chance = atof(dbuf);
 	OPENSSL_free(dbuf);
@@ -1389,15 +1395,17 @@ vg_prefix_context_add_patterns(vg_context_t *vcp,
 		} else {
 			/* Case-enumerate the prefix */
 			if (!prefix_case_iter_init(&caseiter, patterns[i])) {
-				printf("Prefix '%s' is too long\n",
-				       patterns[i]);
+				fprintf(stderr,
+					"Prefix '%s' is too long\n",
+					patterns[i]);
 				continue;
 			}
 
 			if (caseiter.ci_nbits > 16) {
-				printf("WARNING: Prefix '%s' has "
-				       "2^%d case-varied derivitives\n",
-				       patterns[i], caseiter.ci_nbits);
+				fprintf(stderr,
+					"WARNING: Prefix '%s' has "
+					"2^%d case-varied derivitives\n",
+					patterns[i], caseiter.ci_nbits);
 			}
 
 			case_impossible = 0;
@@ -1436,7 +1444,8 @@ vg_prefix_context_add_patterns(vg_context_t *vcp,
 		}
 
 		if (ret == -2) {
-			printf("Prefix '%s' not possible\n", patterns[i]);
+			fprintf(stderr,
+				"Prefix '%s' not possible\n", patterns[i]);
 			impossible++;
 		}
 
@@ -1456,8 +1465,9 @@ vg_prefix_context_add_patterns(vg_context_t *vcp,
 			BN_div(&bntmp3, NULL, &bntmp2, &bntmp, bnctx);
 
 			dbuf = BN_bn2dec(&bntmp3);
-			printf("Prefix difficulty: %20s %s\n",
-			       dbuf, patterns[i]);
+			fprintf(stderr,
+				"Prefix difficulty: %20s %s\n",
+				dbuf, patterns[i]);
 			OPENSSL_free(dbuf);
 		}
 	}
@@ -1479,7 +1489,8 @@ vg_prefix_context_add_patterns(vg_context_t *vcp,
 		default:
 			break;
 		}
-		printf("Hint: valid %s addresses begin with %s\n", ats, bw);
+		fprintf(stderr,
+			"Hint: valid %s addresses begin with %s\n", ats, bw);
 	}
 
 	if (npfx)
@@ -1677,20 +1688,21 @@ vg_regex_context_add_patterns(vg_context_t *vcp,
 				     &pcre_errptr, &pcre_erroffset, NULL);
 		if (!vcrp->vcr_regex[nres]) {
 			const char *spaces = "                ";
-			printf("%s\n", patterns[i]);
+			fprintf(stderr, "%s\n", patterns[i]);
 			while (pcre_erroffset > 16) {
-				printf("%s", spaces);
+				fprintf(stderr, "%s", spaces);
 				pcre_erroffset -= 16;
 			}
 			if (pcre_erroffset > 0)
-				printf("%s", &spaces[16 - pcre_erroffset]);
-			printf("^\nRegex error: %s\n", pcre_errptr);
+				fprintf(stderr,
+					"%s", &spaces[16 - pcre_erroffset]);
+			fprintf(stderr, "^\nRegex error: %s\n", pcre_errptr);
 			continue;
 		}
 		vcrp->vcr_regex_extra[nres] =
 			pcre_study(vcrp->vcr_regex[nres], 0, &pcre_errptr);
 		if (pcre_errptr) {
-			printf("Regex error: %s\n", pcre_errptr);
+			fprintf(stderr, "Regex error: %s\n", pcre_errptr);
 			pcre_free(vcrp->vcr_regex[nres]);
 			continue;
 		}
@@ -1782,7 +1794,7 @@ restart_loop:
 
 		if (d <= 0) {
 			if (d != PCRE_ERROR_NOMATCH) {
-				printf("PCRE error: %d\n", d);
+				fprintf(stderr, "PCRE error: %d\n", d);
 				res = 2;
 				goto out;
 			}

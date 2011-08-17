@@ -204,8 +204,8 @@ vg_ocl_device_getplatform(cl_device_id did)
 	ret = clGetDeviceInfo(did, CL_DEVICE_PLATFORM,
 			      sizeof(val), &val, &size_ret);
 	if (ret != CL_SUCCESS) {
-		printf("clGetDeviceInfo(CL_DEVICE_PLATFORM): %s",
-		       vg_ocl_strerror(ret));
+		fprintf(stderr, "clGetDeviceInfo(CL_DEVICE_PLATFORM): %s",
+			vg_ocl_strerror(ret));
 	}
 	return val;
 }
@@ -219,8 +219,8 @@ vg_ocl_device_gettype(cl_device_id did)
 	ret = clGetDeviceInfo(did, CL_DEVICE_TYPE,
 			      sizeof(val), &val, &size_ret);
 	if (ret != CL_SUCCESS) {
-		printf("clGetDeviceInfo(CL_DEVICE_TYPE): %s",
-		       vg_ocl_strerror(ret));
+		fprintf(stderr, "clGetDeviceInfo(CL_DEVICE_TYPE): %s",
+			vg_ocl_strerror(ret));
 	}
 	return val;
 }
@@ -250,7 +250,8 @@ vg_ocl_device_getsizet(cl_device_id did, cl_device_info param)
 	size_t size_ret;
 	ret = clGetDeviceInfo(did, param, sizeof(val), &val, &size_ret);
 	if (ret != CL_SUCCESS) {
-		printf("clGetDeviceInfo(%d): %s", param, vg_ocl_strerror(ret));
+		fprintf(stderr,
+			"clGetDeviceInfo(%d): %s", param, vg_ocl_strerror(ret));
 	}
 	return val;
 }
@@ -263,7 +264,8 @@ vg_ocl_device_getulong(cl_device_id did, cl_device_info param)
 	size_t size_ret;
 	ret = clGetDeviceInfo(did, param, sizeof(val), &val, &size_ret);
 	if (ret != CL_SUCCESS) {
-		printf("clGetDeviceInfo(%d): %s", param, vg_ocl_strerror(ret));
+		fprintf(stderr,
+			"clGetDeviceInfo(%d): %s", param, vg_ocl_strerror(ret));
 	}
 	return val;
 }
@@ -276,7 +278,8 @@ vg_ocl_device_getuint(cl_device_id did, cl_device_info param)
 	size_t size_ret;
 	ret = clGetDeviceInfo(did, param, sizeof(val), &val, &size_ret);
 	if (ret != CL_SUCCESS) {
-		printf("clGetDeviceInfo(%d): %s", param, vg_ocl_strerror(ret));
+		fprintf(stderr,
+			"clGetDeviceInfo(%d): %s", param, vg_ocl_strerror(ret));
 	}
 	return val;
 }
@@ -290,24 +293,24 @@ vg_ocl_dump_info(vg_ocl_context_t *vocp)
 	if (vocp->voc_dump_done)
 		return;
 	did = vocp->voc_ocldid;
-	printf("Device: %s\n",
+	fprintf(stderr, "Device: %s\n",
 	       vg_ocl_device_getstr(did, CL_DEVICE_NAME));
-	printf("Vendor: %s (%04x)\n",
+	fprintf(stderr, "Vendor: %s (%04x)\n",
 	       vg_ocl_device_getstr(did, CL_DEVICE_VENDOR),
 	       vg_ocl_device_getuint(did, CL_DEVICE_VENDOR_ID));
-	printf("Driver: %s\n",
+	fprintf(stderr, "Driver: %s\n",
 	       vg_ocl_device_getstr(did, CL_DRIVER_VERSION));
-	printf("Profile: %s\n",
+	fprintf(stderr, "Profile: %s\n",
 	       vg_ocl_device_getstr(did, CL_DEVICE_PROFILE));
-	printf("Version: %s\n",
+	fprintf(stderr, "Version: %s\n",
 	       vg_ocl_device_getstr(did, CL_DEVICE_VERSION));
-	printf("Max compute units: %"PRSIZET"d\n",
+	fprintf(stderr, "Max compute units: %"PRSIZET"d\n",
 	       vg_ocl_device_getsizet(did, CL_DEVICE_MAX_COMPUTE_UNITS));
-	printf("Max workgroup size: %"PRSIZET"d\n",
+	fprintf(stderr, "Max workgroup size: %"PRSIZET"d\n",
 	       vg_ocl_device_getsizet(did, CL_DEVICE_MAX_WORK_GROUP_SIZE));
-	printf("Global memory: %ld\n",
+	fprintf(stderr, "Global memory: %ld\n",
 	       vg_ocl_device_getulong(did, CL_DEVICE_GLOBAL_MEM_SIZE));
-	printf("Max allocation: %ld\n",
+	fprintf(stderr, "Max allocation: %ld\n",
 	       vg_ocl_device_getulong(did, CL_DEVICE_MAX_MEM_ALLOC_SIZE));
 	vocp->voc_dump_done = 1;
 }
@@ -317,9 +320,9 @@ vg_ocl_error(vg_ocl_context_t *vocp, int code, const char *desc)
 {
 	const char *err = vg_ocl_strerror(code);
 	if (desc) {
-		printf("%s: %s\n", desc, err);
+		fprintf(stderr, "%s: %s\n", desc, err);
 	} else {
-		printf("%s\n", err);
+		fprintf(stderr, "%s\n", err);
 	}
 
 	if (vocp && vocp->voc_ocldid)
@@ -346,7 +349,7 @@ vg_ocl_buildlog(vg_ocl_context_t *vocp, cl_program prog)
 
 	log = (char *) malloc(logbufsize);
 	if (!log) {
-		printf("Could not allocate build log buffer\n");
+		fprintf(stderr, "Could not allocate build log buffer\n");
 		return;
 	}
 
@@ -377,7 +380,7 @@ vg_ocl_buildlog(vg_ocl_context_t *vocp, cl_program prog)
 				break;
 		}
 
-		printf("Build log:\n%s\n", &log[off]);
+		fprintf(stderr, "Build log:\n%s\n", &log[off]);
 	}
 	free(log);
 }
@@ -465,7 +468,7 @@ vg_ocl_create_kernel(vg_ocl_context_t *vocp, int knum, const char *func)
 	for (i = 0; i < MAX_SLOT; i++) {
 		krn = clCreateKernel(vocp->voc_oclprog, func, &ret);
 		if (!krn) {
-			printf("clCreateKernel(%d): ", i);
+			fprintf(stderr, "clCreateKernel(%d): ", i);
 			vg_ocl_error(vocp, ret, NULL);
 			while (--i >= 0) {
 				clReleaseKernel(vocp->voc_oclkernel[i][knum]);
@@ -618,7 +621,7 @@ vg_ocl_amd_patch(vg_ocl_context_t *vocp, unsigned char *binary, size_t size)
 		nrun = vg_ocl_amd_patch_inner(ptr, size - offset);
 		npatched += nrun;
 		if (vcp->vc_verbose > 1)
-			printf("AMD BFI_INT: patched %d instructions "
+			fprintf(stderr, "AMD BFI_INT: patched %d instructions "
 			       "in kernel %d\n",
 			       nrun, ninner);
 		npatched++;
@@ -642,18 +645,19 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 	char bin_name[64];
 
 	if (vcp->vc_verbose > 1)
-		printf("OpenCL compiler flags: %s\n", opts ? opts : "");
+		fprintf(stderr,
+			"OpenCL compiler flags: %s\n", opts ? opts : "");
 
 	sz = 128 * 1024;
 	buf = (char *) malloc(sz);
 	if (!buf) {
-		printf("Could not allocate program buffer\n");
+		fprintf(stderr, "Could not allocate program buffer\n");
 		return 0;
 	}
 
 	kfp = fopen(filename, "r");
 	if (!kfp) {
-		printf("Error loading kernel file '%s': %s\n",
+		fprintf(stderr, "Error loading kernel file '%s': %s\n",
 		       filename, strerror(errno));
 		free(buf);
 		return 0;
@@ -663,7 +667,7 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 	fclose(kfp);
 
 	if (!len) {
-		printf("Short read on CL kernel\n");
+		fprintf(stderr, "Short read on CL kernel\n");
 		free(buf);
 		return 0;
 	}
@@ -680,7 +684,7 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 	if (vocp->voc_quirks & VG_OCL_NO_BINARIES) {
 		kfp = NULL;
 		if (vcp->vc_verbose > 1)
-			printf("Binary OpenCL programs disabled\n");
+			fprintf(stderr, "Binary OpenCL programs disabled\n");
 	} else {
 		kfp = fopen(bin_name, "rb");
 	}
@@ -694,12 +698,13 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 						 &ret);
 	} else {
 		if (vcp->vc_verbose > 1)
-			printf("Loading kernel binary %s\n", bin_name);
+			fprintf(stderr, "Loading kernel binary %s\n", bin_name);
 		szr = 0;
 		while (!feof(kfp)) {
 			len = fread(buf + szr, 1, sz - szr, kfp);
 			if (!len) {
-				printf("Short read on CL kernel binary\n");
+				fprintf(stderr,
+					"Short read on CL kernel binary\n");
 				fclose(kfp);
 				free(buf);
 				return 0;
@@ -708,8 +713,9 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 			if (szr == sz) {
 				tbuf = (char *) realloc(buf, sz*2);
 				if (!tbuf) {
-					printf("Could not expand CL kernel "
-					       "binary buffer\n");
+					fprintf(stderr,
+						"Could not expand CL kernel "
+						"binary buffer\n");
 					fclose(kfp);
 					free(buf);
 					return 0;
@@ -735,17 +741,18 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 
 	if (vcp->vc_verbose > 0) {
 		if (fromsource && !patched) {
-			printf("Compiling kernel, can take minutes...");
-			fflush(stdout);
+			fprintf(stderr,
+				"Compiling kernel, can take minutes...");
+			fflush(stderr);
 		}
 	}
 	ret = clBuildProgram(prog, 1, &vocp->voc_ocldid, opts, NULL, NULL);
 	if (ret != CL_SUCCESS) {
 		if ((vcp->vc_verbose > 0) && fromsource && !patched)
-			printf("failure.\n");
+			fprintf(stderr, "failure.\n");
 		vg_ocl_error(NULL, ret, "clBuildProgram");
 	} else if ((vcp->vc_verbose > 0) && fromsource && !patched) {
-		printf("done!\n");
+		fprintf(stderr, "done!\n");
 	}
 	if ((ret != CL_SUCCESS) ||
 	    ((vcp->vc_verbose > 1) && fromsource && !patched)) {
@@ -768,14 +775,16 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 			goto out;
 		}
 		if (sz == 0) {
-			printf("WARNING: zero-length CL kernel binary\n");
+			fprintf(stderr,
+				"WARNING: zero-length CL kernel binary\n");
 			goto out;
 		}
 
 		buf = (char *) malloc(szr);
 		if (!buf) {
-			printf("WARNING: Could not allocate %"PRSIZET"d bytes "
-			       "for CL binary\n",
+			fprintf(stderr,
+				"WARNING: Could not allocate %"PRSIZET"d bytes "
+				"for CL binary\n",
 			       szr);
 			goto out;
 		}
@@ -796,11 +805,13 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 						   (unsigned char *) buf, szr);
 			if (patched > 0) {
 				if (vcp->vc_verbose > 1)
-					printf("AMD BFI_INT patch complete\n");
+					fprintf(stderr,
+						"AMD BFI_INT patch complete\n");
 				clReleaseProgram(prog);
 				goto rebuild;
 			}
-			printf("WARNING: AMD BFI_INT patching failed\n");
+			fprintf(stderr,
+				"WARNING: AMD BFI_INT patching failed\n");
 			if (patched < 0) {
 				/* Program was incompletely modified */
 				free(buf);
@@ -810,16 +821,18 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 
 		kfp = fopen(bin_name, "wb");
 		if (!kfp) {
-			printf("WARNING: could not save CL kernel binary: %s\n",
-			       strerror(errno));
+			fprintf(stderr, "WARNING: "
+				"could not save CL kernel binary: %s\n",
+				strerror(errno));
 		} else {
 			sz = fwrite(buf, 1, szr, kfp);
 			fclose(kfp);
 			if (sz != szr) {
-				printf("WARNING: short write on CL kernel "
-				       "binary file: expected "
-				       "%"PRSIZET"d, got %"PRSIZET"d\n",
-				       szr, sz);
+				fprintf(stderr,
+					"WARNING: short write on CL kernel "
+					"binary file: expected "
+					"%"PRSIZET"d, got %"PRSIZET"d\n",
+					szr, sz);
 				unlink(bin_name);
 			}
 		}
@@ -844,7 +857,7 @@ vg_ocl_context_callback(const char *errinfo,
 			size_t cb,
 			void *user_data)
 {
-	printf("vg_ocl_context_callback error: %s\n", errinfo);
+	fprintf(stderr, "vg_ocl_context_callback error: %s\n", errinfo);
 }
 
 int
@@ -985,7 +998,7 @@ vg_ocl_kernel_arg_alloc(vg_ocl_context_t *vocp, int slot,
 			       NULL,
 			       &ret);
 	if (!clbuf) {
-		printf("clCreateBuffer(%d,%d): ", slot, arg);
+		fprintf(stderr, "clCreateBuffer(%d,%d): ", slot, arg);
 		vg_ocl_error(vocp, ret, NULL);
 		return 0;
 	}
@@ -1007,7 +1020,8 @@ vg_ocl_kernel_arg_alloc(vg_ocl_context_t *vocp, int slot,
 					     &clbuf);
 			
 			if (ret) {
-				printf("clSetKernelArg(%d,%d): ", knum, karg);
+				fprintf(stderr,
+					"clSetKernelArg(%d,%d): ", knum, karg);
 				vg_ocl_error(vocp, ret, NULL);
 				return 0;
 			}
@@ -1038,7 +1052,7 @@ vg_ocl_copyout_arg(vg_ocl_context_t *vocp, int wslot, int arg,
 				   NULL);
 			
 	if (ret) {
-		printf("clEnqueueWriteBuffer(%d): ", arg);
+		fprintf(stderr, "clEnqueueWriteBuffer(%d): ", arg);
 		vg_ocl_error(vocp, ret, NULL);
 		return 0;
 	}
@@ -1065,7 +1079,7 @@ vg_ocl_map_arg_buffer(vg_ocl_context_t *vocp, int slot,
 				 NULL,
 				 &ret);
 	if (!buf) {
-		printf("clEnqueueMapBuffer(%d): ", arg);
+		fprintf(stderr, "clEnqueueMapBuffer(%d): ", arg);
 		vg_ocl_error(vocp, ret, NULL);
 		return NULL;
 	}
@@ -1087,7 +1101,7 @@ vg_ocl_unmap_arg_buffer(vg_ocl_context_t *vocp, int slot,
 				      0, NULL,
 				      &ev);
 	if (ret != CL_SUCCESS) {
-		printf("clEnqueueUnmapMemObject(%d): ", arg);
+		fprintf(stderr, "clEnqueueUnmapMemObject(%d): ", arg);
 		vg_ocl_error(vocp, ret, NULL);
 		return;
 	}
@@ -1095,7 +1109,7 @@ vg_ocl_unmap_arg_buffer(vg_ocl_context_t *vocp, int slot,
 	ret = clWaitForEvents(1, &ev);
 	clReleaseEvent(ev);
 	if (ret != CL_SUCCESS) {
-		printf("clWaitForEvent(clUnmapMemObject,%d): ", arg);
+		fprintf(stderr, "clWaitForEvent(clUnmapMemObject,%d): ", arg);
 		vg_ocl_error(vocp, ret, NULL);
 	}
 }
@@ -1115,7 +1129,7 @@ vg_ocl_kernel_int_arg(vg_ocl_context_t *vocp, int slot,
 				     sizeof(value),
 				     &value);
 		if (ret) {
-			printf("clSetKernelArg(%d): ", arg);
+			fprintf(stderr, "clSetKernelArg(%d): ", arg);
 			vg_ocl_error(vocp, ret, NULL);
 			return 0;
 		}
@@ -1141,7 +1155,8 @@ vg_ocl_kernel_buffer_arg(vg_ocl_context_t *vocp, int slot,
 					     size,
 					     value);
 			if (ret) {
-				printf("clSetKernelArg(%d,%d): ", knum, karg);
+				fprintf(stderr,
+					"clSetKernelArg(%d,%d): ", knum, karg);
 				vg_ocl_error(vocp, ret, NULL);
 				return 0;
 			}
@@ -1199,7 +1214,7 @@ vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow,
 
 	if (vocp->voc_verify_func[0] &&
 	    !(vocp->voc_verify_func[0])(vocp, slot)) {
-		printf("ERROR: Kernel 0 failed verification test\n");
+		fprintf(stderr, "ERROR: Kernel 0 failed verification test\n");
 		return 0;
 	}
 
@@ -1223,7 +1238,7 @@ vg_ocl_kernel_start(vg_ocl_context_t *vocp, int slot, int ncol, int nrow,
 
 	if (vocp->voc_verify_func[1] &&
 	    !(vocp->voc_verify_func[1])(vocp, slot)) {
-		printf("ERROR: Kernel 1 failed verification test\n");
+		fprintf(stderr, "ERROR: Kernel 1 failed verification test\n");
 		return 0;
 	}
 
@@ -1381,7 +1396,8 @@ show_elapsed(struct timeval *tv, const char *place)
 	struct timeval now, delta;
         gettimeofday(&now, NULL);
 	timersub(&now, tv, &delta);
-	printf("%s spent %ld.%06lds\n", place, delta.tv_sec, delta.tv_usec);
+	fprintf(stderr,
+		"%s spent %ld.%06lds\n", place, delta.tv_sec, delta.tv_usec);
 }
 
 
@@ -1467,7 +1483,8 @@ vg_ocl_prefix_rekey(vg_ocl_context_t *vocp)
 		/* Count number of range records */
 		i = vg_context_hash160_sort(vcp, NULL);
 		if (!i) {
-			printf("No range records available, exiting\n");
+			fprintf(stderr,
+				"No range records available, exiting\n");
 			return 0;
 		}
 
@@ -1525,12 +1542,12 @@ vg_ocl_prefix_check(vg_ocl_context_t *vocp, int slot)
 			 * the pattern list.  Hmm.
 			 */
 			tablesize = ocl_found_out[2];
-			printf("Match idx: %d\n", ocl_found_out[1]);
-			printf("CPU hash: ");
+			fprintf(stderr, "Match idx: %d\n", ocl_found_out[1]);
+			fprintf(stderr, "CPU hash: ");
 			dumphex(vxcp->vxc_binres + 1, 20);
-			printf("GPU hash: ");
+			fprintf(stderr, "GPU hash: ");
 			dumphex((unsigned char *) (ocl_found_out + 2), 20);
-			printf("Found delta: %d "
+			fprintf(stderr, "Found delta: %d "
 			       "Start delta: %d\n",
 			       found_delta, orig_delta);
 			res = 1;
@@ -1573,13 +1590,13 @@ vg_ocl_config_pattern(vg_ocl_context_t *vocp)
 	i = vg_context_hash160_sort(vcp, NULL);
 	if (i > 0) {
 		if (vcp->vc_verbose > 1)
-			printf("Using OpenCL prefix matcher\n");
+			fprintf(stderr, "Using OpenCL prefix matcher\n");
 		/* Configure for prefix matching */
 		return vg_ocl_prefix_init(vocp);
 	}
 
 	if (vcp->vc_verbose > 0)
-		printf("WARNING: Using CPU pattern matcher\n");
+		fprintf(stderr, "WARNING: Using CPU pattern matcher\n");
 	return vg_ocl_gethash_init(vocp);
 }
 
@@ -1623,7 +1640,7 @@ vg_ocl_verify_temporary(vg_ocl_context_t *vocp, int slot, int z_inverted)
 	ppt = EC_POINT_new(pgroup);
 
 	if (!bnctx || !bnmont || !ppr || !ppc || !pps || !ppt) {
-		printf("ERROR: out of memory\n");
+		fprintf(stderr, "ERROR: out of memory\n");
 		goto out;
 	}
 
@@ -1646,7 +1663,7 @@ vg_ocl_verify_temporary(vg_ocl_context_t *vocp, int slot, int z_inverted)
 		vg_ocl_map_arg_buffer(vocp, slot, 4, 0);
 
 	if (!z_heap || !point_tmp || !ocl_points_in || !ocl_strides_in) {
-		printf("ERROR: could not map OpenCL point buffers\n");
+		fprintf(stderr, "ERROR: could not map OpenCL point buffers\n");
 		goto out;
 	}
 
@@ -1670,39 +1687,44 @@ vg_ocl_verify_temporary(vg_ocl_context_t *vocp, int slot, int z_inverted)
 			if (BN_cmp(&ppt->X, &pps->X) ||
 			    BN_cmp(&ppt->Y, &pps->Y) ||
 			    BN_cmp(&bnz, bnzc)) {
+				if (!mismatches) {
+					fprintf(stderr, "Base privkey: ");
+					dumpbn(EC_KEY_get0_private_key(
+						       vxcp->vxc_key));
+				}
 				mismatches++;
-				printf("Mismatch for kernel %d, "
+				fprintf(stderr, "Mismatch for kernel %d, "
 				       "offset %d (%d,%d)\n",
 				       z_inverted, bx + x, y, x);
 				if (!mm_r) {
 					mm_r = 1;
-					printf("Row X   : ");
+					fprintf(stderr, "Row X   : ");
 					dumpbn(&ppr->X);
-					printf("Row Y   : ");
+					fprintf(stderr, "Row Y   : ");
 					dumpbn(&ppr->Y);
 				}
 
-				printf("Column X: ");
+				fprintf(stderr, "Column X: ");
 				dumpbn(&ppc->X);
-				printf("Column Y: ");
+				fprintf(stderr, "Column Y: ");
 				dumpbn(&ppc->Y);
 
 				if (BN_cmp(&ppt->X, &pps->X)) {
-					printf("Expect X: ");
+					fprintf(stderr, "Expect X: ");
 					dumpbn(&pps->X);
-					printf("Device X: ");
+					fprintf(stderr, "Device X: ");
 					dumpbn(&ppt->X);
 				}
 				if (BN_cmp(&ppt->Y, &pps->Y)) {
-					printf("Expect Y: ");
+					fprintf(stderr, "Expect Y: ");
 					dumpbn(&pps->Y);
-					printf("Device Y: ");
+					fprintf(stderr, "Device Y: ");
 					dumpbn(&ppt->Y);
 				}
 				if (BN_cmp(&bnz, bnzc)) {
-					printf("Expect Z: ");
+					fprintf(stderr, "Expect Z: ");
 					dumpbn(bnzc);
-					printf("Device Z: ");
+					fprintf(stderr, "Device Z: ");
 					dumpbn(&bnz);
 				}
 			}
@@ -1816,7 +1838,7 @@ vg_opencl_thread(void *arg)
 				pidle = ((double) idleu) / (idleu + busyu);
 
 				if (pidle > 0.01) {
-					printf("\rGPU idle: %.2f%%"
+					fprintf(stderr, "\rGPU idle: %.2f%%"
 					       "                              "
 				       "                                \n",
 					       100 * pidle);
@@ -1870,7 +1892,8 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode, int verify,
 
 	if (verify) {
 		if (vcp->vc_verbose > 0) {
-			printf("WARNING: Hardware verification mode enabled\n");
+			fprintf(stderr, "WARNING: "
+				"Hardware verification mode enabled\n");
 		}
 		if (!nthreads)
 			nthreads = 1;
@@ -1943,7 +1966,7 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode, int verify,
 					CL_DEVICE_MAX_MEM_ALLOC_SIZE);
 		memsize /= 2;
 		ncols = full_threads;
-		nrows = 1;
+		nrows = 2;
 		/* Find row and column counts close to sqrt(full_threads) */
 		while ((ncols > nrows) && !(ncols & 1)) {
 			ncols /= 2;
@@ -1976,23 +1999,26 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode, int verify,
 	}
 
 	if (vcp->vc_verbose > 1) {
-		printf("Grid size: %dx%d\n", ncols, nrows);
-		printf("Modular inverse: %d threads, %d ops each\n",
-		       round/invsize, invsize);
+		fprintf(stderr, "Grid size: %dx%d\n", ncols, nrows);
+		fprintf(stderr, "Modular inverse: %d threads, %d ops each\n",
+			round/invsize, invsize);
 	}
 
 	if ((round % invsize) || !is_pow2(invsize) || (invsize < 2)) {
 		if (vcp->vc_verbose <= 1) {
-			printf("Grid size: %dx%d\n", ncols, nrows);
-			printf("Modular inverse: %d threads, %d ops each\n",
-			       round/invsize, invsize);
+			fprintf(stderr, "Grid size: %dx%d\n", ncols, nrows);
+			fprintf(stderr,
+				"Modular inverse: %d threads, %d ops each\n",
+				round/invsize, invsize);
 		}
 		if (round % invsize)
-			printf("Modular inverse work size must "
-			       "evenly divide points\n");
+			fprintf(stderr,
+				"Modular inverse work size must "
+				"evenly divide points\n");
 		else
-			printf("Modular inverse work per task (%d) "
-			       "must be a power of 2\n", invsize);
+			fprintf(stderr,
+				"Modular inverse work per task (%d) "
+				"must be a power of 2\n", invsize);
 		goto out;
 	}
 
@@ -2000,9 +2026,10 @@ vg_opencl_loop(vg_context_t *vcp, cl_device_id did, int safe_mode, int verify,
 	    (vcp->vc_chance >= 1.0f) &&
 	    (vcp->vc_chance < round) &&
 	    (vcp->vc_verbose > 0)) {
-		printf("WARNING: low pattern difficulty\n");
-		printf("WARNING: better match throughput is possible "
-		       "using vanitygen on the CPU\n");
+		fprintf(stderr, "WARNING: low pattern difficulty\n");
+		fprintf(stderr,
+			"WARNING: better match throughput is possible "
+			"using vanitygen on the CPU\n");
 	}
 
 	nslots = 2;
@@ -2232,13 +2259,15 @@ l_rekey:
 
 	if (0) {
 	enomem:
-		printf("ERROR: allocation failure?\n");
+		fprintf(stderr, "ERROR: allocation failure?\n");
 	}
 
 out:
 	if (halt) {
-		if (vcp->vc_verbose > 1)
+		if (vcp->vc_verbose > 1) {
 			printf("Halting...");
+			fflush(stdout);
+		}
 		pthread_mutex_lock(&vocp->voc_lock);
 		vocp->voc_halt = 1;
 		pthread_cond_signal(&vocp->voc_wait);
@@ -2290,7 +2319,7 @@ get_device_list(cl_platform_id pid, cl_device_id **list_out)
 	if (nd) {
 		ids = (cl_device_id *) malloc(nd * sizeof(*ids));
 		if (ids == NULL) {
-			printf("Could not allocate device ID list\n");
+			fprintf(stderr, "Could not allocate device ID list\n");
 			*list_out = NULL;
 			return -1;
 		}
@@ -2330,7 +2359,7 @@ show_devices(cl_platform_id pid, cl_device_id *ids, int nd, int base)
 		if (len >= sizeof(vbuf))
 			len = sizeof(vbuf) - 1;
 		vbuf[len] = '\0';
-		printf("  %d: [%s] %s\n", i + base, vbuf, nbuf);
+		fprintf(stderr, "  %d: [%s] %s\n", i + base, vbuf, nbuf);
 	}
 }
 
@@ -2344,7 +2373,7 @@ get_device(cl_platform_id pid, int num)
 	if (nd < 0)
 		return NULL;
 	if (!nd) {
-		printf("No OpenCL devices found\n");
+		fprintf(stderr, "No OpenCL devices found\n");
 		return NULL;
 	}
 	if (num < 0) {
@@ -2377,7 +2406,8 @@ get_platform_list(cl_platform_id **list_out)
 	if (np) {
 		ids = (cl_platform_id *) malloc(np * sizeof(*ids));
 		if (ids == NULL) {
-			printf("Could not allocate platform ID list\n");
+			fprintf(stderr,
+				"Could not allocate platform ID list\n");
 			*list_out = NULL;
 			return -1;
 		}
@@ -2421,7 +2451,7 @@ show_platforms(cl_platform_id *ids, int np, int base)
 		if (len >= sizeof(vbuf))
 			len = sizeof(vbuf) - 1;
 		vbuf[len] = '\0';
-		printf("%d: [%s] %s\n", i + base, vbuf, nbuf);
+		fprintf(stderr, "%d: [%s] %s\n", i + base, vbuf, nbuf);
 	}
 }
 
@@ -2435,7 +2465,7 @@ get_platform(int num)
 	if (np < 0)
 		return NULL;
 	if (!np) {
-		printf("No OpenCL platforms available\n");
+		fprintf(stderr, "No OpenCL platforms available\n");
 		return NULL;
 	}
 	if (num < 0) {
@@ -2462,15 +2492,15 @@ enumerate_opencl(void)
 
 	np = get_platform_list(&pids);
 	if (!np) {
-		printf("No OpenCL platforms available\n");
+		fprintf(stderr, "No OpenCL platforms available\n");
 		return;
 	}
-	printf("Available OpenCL platforms:\n");
+	fprintf(stderr, "Available OpenCL platforms:\n");
 	for (i = 0; i < np; i++) {
 		show_platforms(&pids[i], 1, i);
 		nd = get_device_list(pids[i], &dids);
 		if (!nd) {
-			printf("  -- No devices\n");
+			fprintf(stderr, "  -- No devices\n");
 		} else {
 			show_devices(pids[i], dids, nd, 0);
 		}
@@ -2498,7 +2528,7 @@ get_opencl_device(int platformidx, int deviceidx)
 void
 usage(const char *name)
 {
-	printf(
+	fprintf(stderr,
 "oclVanitygen %s (" OPENSSL_VERSION_TEXT ")\n"
 "Usage: %s [-vqrikNTS] [-d <device>] [-f <filename>|-] [<pattern>...]\n"
 "Generates a bitcoin receiving address matching <pattern>, and outputs the\n"
@@ -2607,14 +2637,16 @@ main(int argc, char **argv)
 		case 'w':
 			worksize = atoi(optarg);
 			if (worksize == 0) {
-				printf("Invalid work size '%s'\n", optarg);
+				fprintf(stderr,
+					"Invalid work size '%s'\n", optarg);
 				return 1;
 			}
 			break;
 		case 't':
 			nthreads = atoi(optarg);
 			if (nthreads == 0) {
-				printf("Invalid thread count '%s'\n", optarg);
+				fprintf(stderr,
+					"Invalid thread count '%s'\n", optarg);
 				return 1;
 			}
 			break;
@@ -2625,20 +2657,23 @@ main(int argc, char **argv)
 				nrows = strtol(pend+1, NULL, 0);
 			}
 			if (!nrows || !ncols) {
-				printf("Invalid grid size '%s'\n", optarg);
+				fprintf(stderr,
+					"Invalid grid size '%s'\n", optarg);
 				return 1;
 			}
 			break;
 		case 'b':
 			invsize = atoi(optarg);
 			if (!invsize) {
-				printf("Invalid modular inverse size '%s'\n",
-				       optarg);
+				fprintf(stderr,
+					"Invalid modular inverse size '%s'\n",
+					optarg);
 				return 1;
 			}
 			if (invsize & (invsize - 1)) {
-				printf("Modular inverse size must be "
-				       "a power of 2\n");
+				fprintf(stderr,
+					"Modular inverse size must be "
+					"a power of 2\n");
 				return 1;
 			}
 			break;
@@ -2650,7 +2685,7 @@ main(int argc, char **argv)
 			break;
 		case 'f':
 			if (fp) {
-				printf("Multiple files specified\n");
+				fprintf(stderr, "Multiple files specified\n");
 				return 1;
 			}
 			if (!strcmp(optarg, "-")) {
@@ -2658,22 +2693,25 @@ main(int argc, char **argv)
 			} else {
 				fp = fopen(optarg, "r");
 				if (!fp) {
-					printf("Could not open %s: %s\n",
-					       optarg, strerror(errno));
+					fprintf(stderr,
+						"Could not open %s: %s\n",
+						optarg, strerror(errno));
 					return 1;
 				}
 			}
 			break;
 		case 'o':
 			if (result_file) {
-				printf("Multiple output files specified\n");
+				fprintf(stderr,
+					"Multiple output files specified\n");
 				return 1;
 			}
 			result_file = optarg;
 			break;
 		case 's':
 			if (seedfile != NULL) {
-				printf("Multiple RNG seeds specified\n");
+				fprintf(stderr,
+					"Multiple RNG seeds specified\n");
 				return 1;
 			}
 			seedfile = optarg;
@@ -2687,14 +2725,16 @@ main(int argc, char **argv)
 #if OPENSSL_VERSION_NUMBER < 0x10000000L
 	/* Complain about older versions of OpenSSL */
 	if (verbose > 0) {
-		printf("WARNING: Built with " OPENSSL_VERSION_TEXT "\n"
-		       "WARNING: Use OpenSSL 1.0.0d+ for best performance\n");
+		fprintf(stderr,
+			"WARNING: Built with " OPENSSL_VERSION_TEXT "\n"
+			"WARNING: Use OpenSSL 1.0.0d+ for best performance\n");
 	}
 #endif
 
 	if (caseinsensitive && regex)
-		printf("WARNING: case insensitive mode incompatible with "
-		       "regular expressions\n");
+		fprintf(stderr,
+			"WARNING: case insensitive mode incompatible with "
+			"regular expressions\n");
 
 	if (seedfile) {
 		opt = -1;
@@ -2707,17 +2747,18 @@ main(int argc, char **argv)
 #endif
 		opt = RAND_load_file(seedfile, opt);
 		if (!opt) {
-			printf("Could not load RNG seed %s\n", optarg);
+			fprintf(stderr, "Could not load RNG seed %s\n", optarg);
 			return 1;
 		}
 		if (verbose > 0) {
-			printf("Read %d bytes from RNG seed file\n", opt);
+			fprintf(stderr,
+				"Read %d bytes from RNG seed file\n", opt);
 		}
 	}
 
 	if (fp) {
 		if (!vg_read_file(fp, &patterns, &npatterns)) {
-			printf("Failed to load pattern file\n");
+			fprintf(stderr, "Failed to load pattern file\n");
 			return 1;
 		}
 		if (fp != stdin)
@@ -2748,7 +2789,7 @@ main(int argc, char **argv)
 		return 1;
 
 	if (!vcp->vc_npatterns) {
-		printf("No patterns to search\n");
+		fprintf(stderr, "No patterns to search\n");
 		return 1;
 	}
 
@@ -2760,12 +2801,14 @@ main(int argc, char **argv)
 	vcp->vc_key_protect_pass = key_password;
 	if (key_password) {
 		if (!vg_check_password_complexity(key_password, verbose))
-			printf("WARNING: Protecting private keys with "
-			       "weak password\n");
+			fprintf(stderr,
+				"WARNING: Protecting private keys with "
+				"weak password\n");
 	}
 
 	if ((verbose > 0) && regex && (vcp->vc_npatterns > 1))
-		printf("Regular expressions: %ld\n", vcp->vc_npatterns);
+		fprintf(stderr,
+			"Regular expressions: %ld\n", vcp->vc_npatterns);
 
 	did = get_opencl_device(platformidx, deviceidx);
 	if (!did) {
