@@ -19,6 +19,7 @@
 #if !defined (__VG_UTIL_H__)
 #define __VG_UTIL_H__
 
+#include <stdio.h>
 #include <stdint.h>
 
 #include <openssl/bn.h>
@@ -27,6 +28,8 @@
 extern const char *vg_b58_alphabet;
 extern const signed char vg_b58_reverse_map[256];
 
+extern void fdumphex(FILE *fp, const unsigned char *src, size_t len);
+extern void fdumpbn(FILE *fp, const BIGNUM *bn);
 extern void dumphex(const unsigned char *src, size_t len);
 extern void dumpbn(const BIGNUM *bn);
 

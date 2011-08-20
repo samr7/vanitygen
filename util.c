@@ -60,23 +60,35 @@ const signed char vg_b58_reverse_map[256] = {
 };
 
 void
-dumphex(const unsigned char *src, size_t len)
+fdumphex(FILE *fp, const unsigned char *src, size_t len)
 {
 	size_t i;
 	for (i = 0; i < len; i++) {
-		printf("%02x", src[i]);
+		fprintf(fp, "%02x", src[i]);
 	}
 	printf("\n");
 }
 
 void
-dumpbn(const BIGNUM *bn)
+fdumpbn(FILE *fp, const BIGNUM *bn)
 {
 	char *buf;
 	buf = BN_bn2hex(bn);
-	printf("%s\n", buf ? buf : "0");
+	fprintf(stderr, "%s\n", buf ? buf : "0");
 	if (buf)
 		OPENSSL_free(buf);
+}
+
+void
+dumphex(const unsigned char *src, size_t len)
+{
+	fdumphex(stdout, src, len);
+}
+
+void
+dumpbn(const BIGNUM *bn)
+{
+	fdumpbn(stdout, bn);
 }
 
 /*

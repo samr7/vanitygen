@@ -1544,9 +1544,10 @@ vg_ocl_prefix_check(vg_ocl_context_t *vocp, int slot)
 			tablesize = ocl_found_out[2];
 			fprintf(stderr, "Match idx: %d\n", ocl_found_out[1]);
 			fprintf(stderr, "CPU hash: ");
-			dumphex(vxcp->vxc_binres + 1, 20);
+			fdumphex(stderr, vxcp->vxc_binres + 1, 20);
 			fprintf(stderr, "GPU hash: ");
-			dumphex((unsigned char *) (ocl_found_out + 2), 20);
+			fdumphex(stderr,
+				 (unsigned char *) (ocl_found_out + 2), 20);
 			fprintf(stderr, "Found delta: %d "
 			       "Start delta: %d\n",
 			       found_delta, orig_delta);
@@ -1689,7 +1690,7 @@ vg_ocl_verify_temporary(vg_ocl_context_t *vocp, int slot, int z_inverted)
 			    BN_cmp(&bnz, bnzc)) {
 				if (!mismatches) {
 					fprintf(stderr, "Base privkey: ");
-					dumpbn(EC_KEY_get0_private_key(
+					fdumpbn(stderr, EC_KEY_get0_private_key(
 						       vxcp->vxc_key));
 				}
 				mismatches++;
@@ -1699,33 +1700,33 @@ vg_ocl_verify_temporary(vg_ocl_context_t *vocp, int slot, int z_inverted)
 				if (!mm_r) {
 					mm_r = 1;
 					fprintf(stderr, "Row X   : ");
-					dumpbn(&ppr->X);
+					fdumpbn(stderr, &ppr->X);
 					fprintf(stderr, "Row Y   : ");
-					dumpbn(&ppr->Y);
+					fdumpbn(stderr, &ppr->Y);
 				}
 
 				fprintf(stderr, "Column X: ");
-				dumpbn(&ppc->X);
+				fdumpbn(stderr, &ppc->X);
 				fprintf(stderr, "Column Y: ");
-				dumpbn(&ppc->Y);
+				fdumpbn(stderr, &ppc->Y);
 
 				if (BN_cmp(&ppt->X, &pps->X)) {
 					fprintf(stderr, "Expect X: ");
-					dumpbn(&pps->X);
+					fdumpbn(stderr, &pps->X);
 					fprintf(stderr, "Device X: ");
-					dumpbn(&ppt->X);
+					fdumpbn(stderr, &ppt->X);
 				}
 				if (BN_cmp(&ppt->Y, &pps->Y)) {
 					fprintf(stderr, "Expect Y: ");
-					dumpbn(&pps->Y);
+					fdumpbn(stderr, &pps->Y);
 					fprintf(stderr, "Device Y: ");
-					dumpbn(&ppt->Y);
+					fdumpbn(stderr, &ppt->Y);
 				}
 				if (BN_cmp(&bnz, bnzc)) {
 					fprintf(stderr, "Expect Z: ");
-					dumpbn(bnzc);
+					fdumpbn(stderr, bnzc);
 					fprintf(stderr, "Device Z: ");
-					dumpbn(&bnz);
+					fdumpbn(stderr, &bnz);
 				}
 			}
 		}
