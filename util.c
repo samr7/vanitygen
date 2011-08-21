@@ -74,7 +74,7 @@ fdumpbn(FILE *fp, const BIGNUM *bn)
 {
 	char *buf;
 	buf = BN_bn2hex(bn);
-	fprintf(stderr, "%s\n", buf ? buf : "0");
+	fprintf(fp, "%s\n", buf ? buf : "0");
 	if (buf)
 		OPENSSL_free(buf);
 }
