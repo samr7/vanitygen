@@ -254,6 +254,30 @@ vg_encode_address(const EC_KEY *pkey, int addrtype, char *result)
 }
 
 void
+vg_encode_script_address(const EC_KEY *pkey, int addrtype, char *result)
+{
+	unsigned char script_buf[69];
+	unsigned char *eckey_buf = script_buf + 2;
+	unsigned char binres[21] = {0,};
+	unsigned char hash1[32];
+
+	script_buf[ 0] = 0x51;  // OP_1
+	script_buf[ 1] = 0x41;  // pubkey length
+	// gap for pubkey
+	script_buf[67] = 0x51;  // OP_1
+	script_buf[68] = 0xae;  // OP_CHECKMULTISIG
+
+	i2o_ECPublicKey((EC_KEY*)pkey, &eckey_buf);
+	assert(eckey_buf - script_buf == 67);
+
+	binres[0] = addrtype;
+	SHA256(script_buf, 69, hash1);
+	RIPEMD160(hash1, sizeof(hash1), &binres[1]);
+
+	vg_b58_encode_check(binres, sizeof(binres), result);
+}
+
+void
 vg_encode_privkey(const EC_KEY *pkey, int addrtype, char *result)
 {
 	unsigned char eckey_buf[128];
