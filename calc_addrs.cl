@@ -108,12 +108,10 @@
 /* Explicit loop unrolling */
 #define unroll_5(a) do { a(0) a(1) a(2) a(3) a(4) } while (0)
 #define unroll_8(a) do { a(0) a(1) a(2) a(3) a(4) a(5) a(6) a(7) } while (0)
-#define unroll_8_sf(a) do { a(1) a(2) a(3) a(4) a(5) a(6) a(7) } while (0)
-#define unroll_8_sl(a) do { a(0) a(1) a(2) a(3) a(4) a(5) a(6) } while (0)
-#define unroll_8_reverse(a) \
-	do { a(7) a(6) a(5) a(4) a(3) a(2) a(1) a(0) } while (0)
-#define unroll_8_reverse_sl(a) \
-	do { a(7) a(6) a(5) a(4) a(3) a(2) a(1) } while (0)
+#define unroll_1_7(a) do { a(1) a(2) a(3) a(4) a(5) a(6) a(7) } while (0)
+#define unroll_7(a) do { a(0) a(1) a(2) a(3) a(4) a(5) a(6) } while (0)
+#define unroll_7_0(a) do { a(7) a(6) a(5) a(4) a(3) a(2) a(1) a(0) } while (0)
+#define unroll_7_1(a) do { a(7) a(6) a(5) a(4) a(3) a(2) a(1) } while (0)
 #define unroll_16(a) do {				\
 	a(0) a(1) a(2) a(3) a(4) a(5) a(6) a(7)		\
 	a(8) a(9) a(10) a(11) a(12) a(13) a(14) a(15)	\
@@ -172,7 +170,6 @@ typedef struct {
 } bignum;
 
 __constant bn_word modulus[] = { MODULUS_BYTES };
-__constant bn_word bn_one[BN_NWORDS] = { 1, 0, };
 __constant bignum bn_zero;
 
 __constant bn_word mont_rr[BN_NWORDS] = { 0xe90a1, 0x7a2, 0x1, 0, };
@@ -191,10 +188,10 @@ __constant bn_word mont_n0[2] = { 0xd2253531, 0xd838091d };
 	((((bn_word*)&bn)[n >> BN_WSHIFT]) & (1 << (n & (BN_WBITS-1))))
 
 #define bn_unroll(e) unroll_8(e)
-#define bn_unroll_sf(e)	unroll_8_sf(e)
-#define bn_unroll_sl(e)	unroll_8_sl(e)
-#define bn_unroll_reverse(e) unroll_8_reverse(e)
-#define bn_unroll_reverse_sl(e) unroll_8_reverse_sl(e)
+#define bn_unroll_sf(e)	unroll_1_7(e)
+#define bn_unroll_sl(e)	unroll_7(e)
+#define bn_unroll_reverse(e) unroll_7_0(e)
+#define bn_unroll_reverse_sl(e) unroll_7_1(e)
 
 #define bn_unroll_arg(e, arg)				\
 	e(arg, 0) e(arg, 1) e(arg, 2) e(arg, 3)	\
