@@ -1404,7 +1404,7 @@ vg_prefix_context_add_patterns(vg_context_t *vcp,
 			if (caseiter.ci_nbits > 16) {
 				fprintf(stderr,
 					"WARNING: Prefix '%s' has "
-					"2^%d case-varied derivitives\n",
+					"2^%d case-varied derivatives\n",
 					patterns[i], caseiter.ci_nbits);
 			}
 
