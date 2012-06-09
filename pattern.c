@@ -16,6 +16,7 @@
  * along with Vanitygen.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -304,13 +305,16 @@ void
 vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 {
 	unsigned char key_buf[512], *pend;
-	char addr_buf[64];
+	char addr_buf[64], addr2_buf[64];
 	char privkey_buf[VG_PROTKEY_MAX_B58];
 	const char *keytype = "Privkey";
 	int len;
+	bool isscript = vcp->vc_format == VCF_SCRIPT;
 
 	assert(EC_KEY_check_key(pkey));
-	vg_encode_address(pkey, vcp->vc_addrtype, addr_buf);
+	vg_encode_address(pkey, vcp->vc_pubkeytype, addr_buf);
+	if (isscript)
+		vg_encode_script_address(pkey, vcp->vc_addrtype, addr2_buf);
 
 	if (vcp->vc_key_protect_pass) {
 		len = vg_protect_encode_privkey(privkey_buf,
@@ -350,6 +354,8 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 	}
 
 	if (!vcp->vc_result_file || (vcp->vc_verbose > 0)) {
+		if (isscript)
+			printf("Address: %s\n", addr2_buf);
 		printf("Address: %s\n"
 		       "%s: %s\n",
 		       addr_buf, keytype, privkey_buf);
@@ -364,9 +370,13 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 		} else {
 			fprintf(fp,
 				"Pattern: %s\n"
+				, pattern);
+			if (isscript)
+				fprintf(fp, "Address: %s\n", addr2_buf);
+			fprintf(fp,
 				"Address: %s\n"
 				"%s: %s\n",
-				pattern, addr_buf, keytype, privkey_buf);
+				addr_buf, keytype, privkey_buf);
 			fclose(fp);
 		}
 	}
@@ -1478,6 +1488,10 @@ vg_prefix_context_add_patterns(vg_context_t *vcp,
 	if (!npfx && impossible) {
 		const char *ats = "bitcoin", *bw = "\"1\"";
 		switch (vcpp->base.vc_addrtype) {
+		case 5:
+			ats = "bitcoin script";
+			bw = "\"3\"";
+			break;
 		case 111:
 			ats = "testnet";
 			bw = "\"m\" or \"n\"";

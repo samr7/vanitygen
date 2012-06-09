@@ -66,6 +66,11 @@ typedef int (*vg_add_pattern_func_t)(vg_context_t *,
 typedef int (*vg_test_func_t)(vg_exec_context_t *);
 typedef int (*vg_hash160_sort_func_t)(vg_context_t *vcp, void *buf);
 
+enum vg_format {
+	VCF_PUBKEY,
+	VCF_SCRIPT,
+};
+
 /* Application-level context, incl. parameters and global pattern store */
 struct _vg_context_s {
 	int			vc_addrtype;
@@ -82,6 +87,8 @@ struct _vg_context_s {
 	vg_add_pattern_func_t	vc_add_patterns;
 	vg_test_func_t		vc_test;
 	vg_hash160_sort_func_t	vc_hash160_sort;
+	enum vg_format		vc_format;
+	int			vc_pubkeytype;
 };
 
 

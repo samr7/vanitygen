@@ -16,6 +16,7 @@
  * along with Vanitygen.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -205,10 +206,13 @@ vg_exec_upgrade_lock(vg_exec_context_t *vxcp)
 void *
 vg_thread_loop(void *arg)
 {
-	unsigned char eckey_buf[128];
+	unsigned char script_buf[69];
+	unsigned char *eckey_buf = script_buf + 2;
+	unsigned char *hash_buf;
 	unsigned char hash1[32];
 
 	int i, c, len, output_interval;
+	int hash_len;
 
 	const BN_ULONG rekey_max = 10000000;
 	BN_ULONG npoints, rekey_at, nbatch;
@@ -222,6 +226,7 @@ vg_thread_loop(void *arg)
 	EC_POINT *pbatchinc;
 
 	vg_test_func_t test_func = vcp->vc_test;
+	bool doscript = vcp->vc_format == VCF_SCRIPT;
 	vg_thread_context_t ctx;
 	vg_exec_context_t *vxcp;
 
@@ -331,15 +336,31 @@ vg_thread_loop(void *arg)
 
 		EC_POINTs_make_affine(pgroup, nbatch, ppnt, vxcp->vxc_bnctx);
 
+		if (doscript)
+		{
+			script_buf[ 0] = 0x51;  // OP_1
+			script_buf[ 1] = 0x41;  // pubkey length
+			// gap for pubkey
+			script_buf[67] = 0x51;  // OP_1
+			script_buf[68] = 0xae;  // OP_CHECKMULTISIG
+			hash_buf = script_buf;
+			hash_len = 69;
+		}
+		else
+		{
+			hash_buf = eckey_buf;
+			hash_len = 65;
+		}
 		for (i = 0; i < nbatch; i++, vxcp->vxc_delta++) {
 			/* Hash the public key */
 			len = EC_POINT_point2oct(pgroup, ppnt[i],
 						 POINT_CONVERSION_UNCOMPRESSED,
 						 eckey_buf,
-						 sizeof(eckey_buf),
+						 65,
 						 vxcp->vxc_bnctx);
+			assert(len == 65);
 
-			SHA256(eckey_buf, len, hash1);
+			SHA256(hash_buf, hash_len, hash1);
 			RIPEMD160(hash1, sizeof(hash1), &vxcp->vxc_binres[1]);
 
 			switch (test_func(vxcp)) {
@@ -450,6 +471,7 @@ usage(const char *name)
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
 "-X <version>  Generate address with the given version\n"
+"-F <format>   Generate address with the given format (pubkey or script)\n"
 "-e            Encrypt private keys, prompt for password\n"
 "-E <password> Encrypt private keys with <password> (UNSAFE)\n"
 "-t <threads>  Set number of worker threads (Default: number of CPUs)\n"
@@ -464,7 +486,10 @@ int
 main(int argc, char **argv)
 {
 	int addrtype = 0;
+	int scriptaddrtype = 5;
 	int privtype = 128;
+	int pubkeytype;
+	enum vg_format format = VCF_PUBKEY;
 	int regex = 0;
 	int caseinsensitive = 0;
 	int verbose = 1;
@@ -481,7 +506,7 @@ main(int argc, char **argv)
 	int nthreads = 0;
 	vg_context_t *vcp = NULL;
 
-	while ((opt = getopt(argc, argv, "vqrikeE:NTX:t:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqrikeE:NTXF:t:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -501,14 +526,28 @@ main(int argc, char **argv)
 		case 'N':
 			addrtype = 52;
 			privtype = 180;
+			scriptaddrtype = -1;
 			break;
 		case 'T':
 			addrtype = 111;
 			privtype = 239;
+			scriptaddrtype = 196;
 			break;
 		case 'X':
 			addrtype = atoi(optarg);
 			privtype = 128 + addrtype;
+			scriptaddrtype = addrtype;
+			break;
+		case 'F':
+			if (!strcmp(optarg, "script"))
+				format = VCF_SCRIPT;
+			else
+			if (strcmp(optarg, "pubkey"))
+			{
+				fprintf(stderr,
+					"Invalid format '%s'\n", optarg);
+				return 1;
+			}
 			break;
 		case 'e':
 			prompt_password = 1;
@@ -578,6 +617,18 @@ main(int argc, char **argv)
 			"WARNING: case insensitive mode incompatible with "
 			"regular expressions\n");
 
+	pubkeytype = addrtype;
+	if (format == VCF_SCRIPT)
+	{
+		if (scriptaddrtype == -1)
+		{
+			fprintf(stderr,
+				"Address type incompatible with script format\n");
+			return 1;
+		}
+		addrtype = scriptaddrtype;
+	}
+
 	if (seedfile) {
 		opt = -1;
 #if !defined(_WIN32)
@@ -626,6 +677,8 @@ main(int argc, char **argv)
 	vcp->vc_verbose = verbose;
 	vcp->vc_result_file = result_file;
 	vcp->vc_remove_on_match = remove_on_match;
+	vcp->vc_format = format;
+	vcp->vc_pubkeytype = pubkeytype;
 
 	if (!vg_context_add_patterns(vcp, patterns, npatterns))
 		return 1;
