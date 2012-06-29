@@ -32,7 +32,7 @@ lists of prefixes will have little effect on search rate.  Searching
 for N regular expressions will have varied performance depending on the 
 complexity of the expressions, but O(N) performance can be expected.
 
-By defaut, vanitygen will spawn one worker thread for each CPU in your 
+By default, vanitygen will spawn one worker thread for each CPU in your 
 system.  If you wish to limit the number of worker threads created by 
 vanitygen, use the "-t" option.
 
