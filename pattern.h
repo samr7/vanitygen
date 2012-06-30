@@ -54,11 +54,12 @@ extern int vg_exec_context_init(vg_context_t *vcp, vg_exec_context_t *vxcp);
 extern void vg_exec_context_del(vg_exec_context_t *vxcp);
 extern void vg_exec_context_consolidate_key(vg_exec_context_t *vxcp);
 extern void vg_exec_context_calc_address(vg_exec_context_t *vxcp);
+extern EC_KEY *vg_exec_context_new_key(void);
+
 
 /* Implementation-specific lock/unlock/consolidate */
 extern void vg_exec_downgrade_lock(vg_exec_context_t *vxcp);
 extern int vg_exec_upgrade_lock(vg_exec_context_t *vxcp);
-
 
 typedef void (*vg_free_func_t)(vg_context_t *);
 typedef int (*vg_add_pattern_func_t)(vg_context_t *,
@@ -89,6 +90,7 @@ struct _vg_context_s {
 	vg_hash160_sort_func_t	vc_hash160_sort;
 	enum vg_format		vc_format;
 	int			vc_pubkeytype;
+	EC_POINT		*vc_pubkey_base;
 };
 
 

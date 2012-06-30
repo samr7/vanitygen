@@ -24,10 +24,11 @@ usage(const char *progname)
 {
 	fprintf(stderr,
 "Vanitygen keyconv %s\n"
-"Usage: %s [-8] [-e|-E <password>] [<key>]\n"
+"Usage: %s [-8] [-e|-E <password>] [-c <key>] [<key>]\n"
 "-8            Output key in PKCS#8 form\n"
 "-e            Encrypt output key, prompt for password\n"
-"-E <password> Encrypt output key with <password> (UNSAFE)\n",
+"-E <password> Encrypt output key with <password> (UNSAFE)\n"
+"-c <key>      Combine private key parts to make complete private key",
 		version, progname);
 }
 
@@ -40,6 +41,7 @@ main(int argc, char **argv)
 	char pbuf[1024];
 	const char *key_in;
 	const char *pass_in = NULL;
+	const char *key2_in = NULL;
 	EC_KEY *pkey;
 	int parameter_group = -1;
 	int privtype, addrtype;
@@ -48,7 +50,7 @@ main(int argc, char **argv)
 	int opt;
 	int res;
 
-	while ((opt = getopt(argc, argv, "8E:e")) != -1) {
+	while ((opt = getopt(argc, argv, "8E:ec:")) != -1) {
 		switch (opt) {
 		case '8':
 			pkcs8 = 1;
@@ -69,6 +71,9 @@ main(int argc, char **argv)
 				return 1;
 			}
 			pass_prompt = 1;
+			break;
+		case 'c':
+			key2_in = optarg;
 			break;
 		default:
 			usage(argv[0]);
@@ -99,6 +104,33 @@ main(int argc, char **argv)
 	if (!res) {
 		fprintf(stderr, "ERROR: Unrecognized key format\n");
 		return 1;
+	}
+
+	if (key2_in) {
+		BIGNUM bntmp;
+		EC_KEY *pkey2;
+
+		pkey2 = EC_KEY_new_by_curve_name(NID_secp256k1);
+		res = vg_decode_privkey_any(pkey2, &privtype, key2_in, NULL);
+		if (res < 0) {
+			if (EVP_read_pw_string(pwbuf, sizeof(pwbuf),
+					       "Enter import password:", 0) ||
+			    !vg_decode_privkey_any(pkey2, &privtype,
+						   key2_in, pwbuf))
+				return 1;
+		}
+
+		if (!res) {
+			fprintf(stderr, "ERROR: Unrecognized key format\n");
+			return 1;
+		}
+		BN_init(&bntmp);
+		BN_add(&bntmp,
+		       EC_KEY_get0_private_key(pkey),
+		       EC_KEY_get0_private_key(pkey2));
+		vg_set_privkey(&bntmp, pkey);
+		EC_KEY_free(pkey2);
+		BN_clear_free(&bntmp);
 	}
 
 	if (pass_prompt) {
@@ -138,13 +170,17 @@ main(int argc, char **argv)
 			return 1;
 		}
 
-		vg_encode_address(pkey, addrtype, pwbuf);
+		vg_encode_address(EC_KEY_get0_public_key(pkey),
+				  EC_KEY_get0_group(pkey),
+				  addrtype, pwbuf);
 		printf("Address: %s\n", pwbuf);
 		printf("Protkey: %s\n", ecprot);
 	}
 
 	else {
-		vg_encode_address(pkey, addrtype, ecprot);
+		vg_encode_address(EC_KEY_get0_public_key(pkey),
+				  EC_KEY_get0_group(pkey),
+				  addrtype, ecprot);
 		printf("Address: %s\n", ecprot);
 		vg_encode_privkey(pkey, privtype, ecprot);
 		printf("Privkey: %s\n", ecprot);

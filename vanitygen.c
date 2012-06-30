@@ -304,6 +304,13 @@ vg_thread_loop(void *arg)
 			npoints++;
 			vxcp->vxc_delta = 0;
 
+			if (vcp->vc_pubkey_base)
+				EC_POINT_add(pgroup,
+					     ppnt[0],
+					     ppnt[0],
+					     vcp->vc_pubkey_base,
+					     vxcp->vxc_bnctx);
+
 			for (nbatch = 1;
 			     (nbatch < ptarraysize) && (npoints < rekey_at);
 			     nbatch++, npoints++) {
@@ -468,6 +475,7 @@ usage(const char *name)
 "-T            Generate bitcoin testnet address\n"
 "-X <version>  Generate address with the given version\n"
 "-F <format>   Generate address with the given format (pubkey or script)\n"
+"-P <pubkey>   Specify base public key for piecewise key generation\n"
 "-e            Encrypt private keys, prompt for password\n"
 "-E <password> Encrypt private keys with <password> (UNSAFE)\n"
 "-t <threads>  Set number of worker threads (Default: number of CPUs)\n"
@@ -501,8 +509,9 @@ main(int argc, char **argv)
 	int npatterns = 0;
 	int nthreads = 0;
 	vg_context_t *vcp = NULL;
+	EC_POINT *pubkey_base = NULL;
 
-	while ((opt = getopt(argc, argv, "vqrikeE:NTXF:t:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqrikeE:P:NTXF:t:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -538,13 +547,31 @@ main(int argc, char **argv)
 			if (!strcmp(optarg, "script"))
 				format = VCF_SCRIPT;
 			else
-			if (strcmp(optarg, "pubkey"))
-			{
+			if (strcmp(optarg, "pubkey")) {
 				fprintf(stderr,
 					"Invalid format '%s'\n", optarg);
 				return 1;
 			}
 			break;
+		case 'P': {
+			if (pubkey_base != NULL) {
+				fprintf(stderr,
+					"Multiple base pubkeys specified\n");
+				return 1;
+			}
+			EC_KEY *pkey = vg_exec_context_new_key();
+			pubkey_base = EC_POINT_hex2point(
+				EC_KEY_get0_group(pkey),
+				optarg, NULL, NULL);
+			EC_KEY_free(pkey);
+			if (pubkey_base == NULL) {
+				fprintf(stderr,
+					"Invalid base pubkey\n");
+				return 1;
+			}
+			break;
+		}
+			
 		case 'e':
 			prompt_password = 1;
 			break;
@@ -675,6 +702,7 @@ main(int argc, char **argv)
 	vcp->vc_remove_on_match = remove_on_match;
 	vcp->vc_format = format;
 	vcp->vc_pubkeytype = pubkeytype;
+	vcp->vc_pubkey_base = pubkey_base;
 
 	if (!vg_context_add_patterns(vcp, patterns, npatterns))
 		return 1;

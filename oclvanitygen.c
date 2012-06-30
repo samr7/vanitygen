@@ -2124,6 +2124,14 @@ l_rekey:
 
 	EC_POINT_copy(ppbase[0], EC_KEY_get0_public_key(pkey));
 
+	if (vcp->vc_pubkey_base) {
+		EC_POINT_add(pgroup,
+			     ppbase[0],
+			     ppbase[0],
+			     vcp->vc_pubkey_base,
+			     vxcp->vxc_bnctx);
+	}
+
 	/* Build the base array of sequential points */
 	for (i = 1; i < ncols; i++) {
 		EC_POINT_add(pgroup,
@@ -2590,11 +2598,12 @@ main(int argc, char **argv)
 	int safe_mode = 0;
 	vg_context_t *vcp = NULL;
 	cl_device_id did;
+	EC_POINT *pubkey_base = NULL;
 	const char *result_file = NULL;
 	const char *key_password = NULL;
 
 	while ((opt = getopt(argc, argv,
-			     "vqrikNTX:eE:p:d:w:t:g:b:VSh?f:o:s:")) != -1) {
+			     "vqrikNTX:eE:p:P:d:w:t:g:b:VSh?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -2684,6 +2693,24 @@ main(int argc, char **argv)
 		case 'S':
 			safe_mode = 1;
 			break;
+		case 'P': {
+			if (pubkey_base != NULL) {
+				fprintf(stderr,
+					"Multiple base pubkeys specified\n");
+				return 1;
+			}
+			EC_KEY *pkey = vg_exec_context_new_key();
+			pubkey_base = EC_POINT_hex2point(
+				EC_KEY_get0_group(pkey),
+				optarg, NULL, NULL);
+			EC_KEY_free(pkey);
+			if (pubkey_base == NULL) {
+				fprintf(stderr,
+					"Invalid base pubkey\n");
+				return 1;
+			}
+			break;
+		}
 		case 'f':
 			if (fp) {
 				fprintf(stderr, "Multiple files specified\n");
@@ -2785,6 +2812,7 @@ main(int argc, char **argv)
 	vcp->vc_verbose = verbose;
 	vcp->vc_result_file = result_file;
 	vcp->vc_remove_on_match = remove_on_match;
+	vcp->vc_pubkey_base = pubkey_base;
 
 	if (!vg_context_add_patterns(vcp, patterns, npatterns))
 		return 1;

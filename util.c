@@ -236,7 +236,8 @@ out:
 }
 
 void
-vg_encode_address(const EC_KEY *pkey, int addrtype, char *result)
+vg_encode_address(const EC_POINT *ppoint, const EC_GROUP *pgroup,
+		  int addrtype, char *result)
 {
 	unsigned char eckey_buf[128], *pend;
 	unsigned char binres[21] = {0,};
@@ -244,8 +245,13 @@ vg_encode_address(const EC_KEY *pkey, int addrtype, char *result)
 
 	pend = eckey_buf;
 
-	i2o_ECPublicKey((EC_KEY*)pkey, &pend);
-
+	EC_POINT_point2oct(pgroup,
+			   ppoint,
+			   POINT_CONVERSION_UNCOMPRESSED,
+			   eckey_buf,
+			   sizeof(eckey_buf),
+			   NULL);
+	pend = eckey_buf + 0x41;
 	binres[0] = addrtype;
 	SHA256(eckey_buf, pend - eckey_buf, hash1);
 	RIPEMD160(hash1, sizeof(hash1), &binres[1]);
@@ -254,7 +260,8 @@ vg_encode_address(const EC_KEY *pkey, int addrtype, char *result)
 }
 
 void
-vg_encode_script_address(const EC_KEY *pkey, int addrtype, char *result)
+vg_encode_script_address(const EC_POINT *ppoint, const EC_GROUP *pgroup,
+			 int addrtype, char *result)
 {
 	unsigned char script_buf[69];
 	unsigned char *eckey_buf = script_buf + 2;
@@ -267,9 +274,12 @@ vg_encode_script_address(const EC_KEY *pkey, int addrtype, char *result)
 	script_buf[67] = 0x51;  // OP_1
 	script_buf[68] = 0xae;  // OP_CHECKMULTISIG
 
-	i2o_ECPublicKey((EC_KEY*)pkey, &eckey_buf);
-	assert(eckey_buf - script_buf == 67);
-
+	EC_POINT_point2oct(pgroup,
+			   ppoint,
+			   POINT_CONVERSION_UNCOMPRESSED,
+			   eckey_buf,
+			   65,
+			   NULL);
 	binres[0] = addrtype;
 	SHA256(script_buf, 69, hash1);
 	RIPEMD160(hash1, sizeof(hash1), &binres[1]);

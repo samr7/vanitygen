@@ -39,6 +39,12 @@
  * Common code for execution helper
  */
 
+EC_KEY *
+vg_exec_context_new_key(void)
+{
+	return EC_KEY_new_by_curve_name(NID_secp256k1);
+}
+
 int
 vg_exec_context_init(vg_context_t *vcp, vg_exec_context_t *vxcp)
 {
@@ -55,7 +61,7 @@ vg_exec_context_init(vg_context_t *vcp, vg_exec_context_t *vxcp)
 
 	vxcp->vxc_bnctx = BN_CTX_new();
 	assert(vxcp->vxc_bnctx);
-	vxcp->vxc_key = EC_KEY_new_by_curve_name(NID_secp256k1);
+	vxcp->vxc_key = vg_exec_context_new_key();
 	assert(vxcp->vxc_key);
 	EC_KEY_precompute_mult(vxcp->vxc_key, vxcp->vxc_bnctx);
 	return 1;
@@ -89,14 +95,24 @@ vg_exec_context_consolidate_key(vg_exec_context_t *vxcp)
 void
 vg_exec_context_calc_address(vg_exec_context_t *vxcp)
 {
+	EC_POINT *pubkey;
 	const EC_GROUP *pgroup;
 	unsigned char eckey_buf[96], hash1[32], hash2[20];
 	int len;
 
 	vg_exec_context_consolidate_key(vxcp);
 	pgroup = EC_KEY_get0_group(vxcp->vxc_key);
+	pubkey = EC_POINT_new(pgroup);
+	EC_POINT_copy(pubkey, EC_KEY_get0_public_key(vxcp->vxc_key));
+	if (vxcp->vxc_vc->vc_pubkey_base) {
+		EC_POINT_add(pgroup,
+			     pubkey,
+			     pubkey,
+			     vxcp->vxc_vc->vc_pubkey_base,
+			     vxcp->vxc_bnctx);
+	}
 	len = EC_POINT_point2oct(pgroup,
-				 EC_KEY_get0_public_key(vxcp->vxc_key),
+				 pubkey,
 				 POINT_CONVERSION_UNCOMPRESSED,
 				 eckey_buf,
 				 sizeof(eckey_buf),
@@ -105,6 +121,7 @@ vg_exec_context_calc_address(vg_exec_context_t *vxcp)
 	RIPEMD160(hash1, sizeof(hash1), hash2);
 	memcpy(&vxcp->vxc_binres[1],
 	       hash2, 20);
+	EC_POINT_free(pubkey);
 }
 
 enum {
@@ -310,10 +327,30 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 	int len;
 	int isscript = (vcp->vc_format == VCF_SCRIPT);
 
+	EC_POINT *ppnt;
+	int free_ppnt = 0;
+	if (vcp->vc_pubkey_base) {
+		ppnt = EC_POINT_new(EC_KEY_get0_group(pkey));
+		EC_POINT_copy(ppnt, EC_KEY_get0_public_key(pkey));
+		EC_POINT_add(EC_KEY_get0_group(pkey),
+			     ppnt,
+			     ppnt,
+			     vcp->vc_pubkey_base,
+			     NULL);
+		free_ppnt = 1;
+		keytype = "PrivkeyPart";
+	} else {
+		ppnt = (EC_POINT *) EC_KEY_get0_public_key(pkey);
+	}
+
 	assert(EC_KEY_check_key(pkey));
-	vg_encode_address(pkey, vcp->vc_pubkeytype, addr_buf);
+	vg_encode_address(ppnt,
+			  EC_KEY_get0_group(pkey),
+			  vcp->vc_pubkeytype, addr_buf);
 	if (isscript)
-		vg_encode_script_address(pkey, vcp->vc_addrtype, addr2_buf);
+		vg_encode_script_address(ppnt,
+					 EC_KEY_get0_group(pkey),
+					 vcp->vc_addrtype, addr2_buf);
 
 	if (vcp->vc_key_protect_pass) {
 		len = vg_protect_encode_privkey(privkey_buf,
@@ -349,7 +386,6 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 			printf("Privkey (ASN1): ");
 			dumphex(key_buf, len);
 		}
-
 	}
 
 	if (!vcp->vc_result_file || (vcp->vc_verbose > 0)) {
@@ -379,6 +415,8 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 			fclose(fp);
 		}
 	}
+	if (free_ppnt)
+		EC_POINT_free(ppnt);
 }
 
 
