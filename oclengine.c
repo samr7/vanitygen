@@ -26,7 +26,7 @@
 #include <openssl/ec.h>
 #include <openssl/bn.h>
 #include <openssl/rand.h>
-#include <openssl/md5.h>
+#include <openssl/evp.h>
 
 #ifdef __APPLE__
 #include <OpenCL/cl.h>
@@ -487,23 +487,25 @@ vg_ocl_hash_program(vg_ocl_context_t *vocp, const char *opts,
 		    const char *program, size_t size,
 		    unsigned char *hash_out)
 {
-	MD5_CTX ctx;
+	EVP_MD_CTX *mdctx;
 	cl_platform_id pid;
 	const char *str;
 
-	MD5_Init(&ctx);
+	mdctx = EVP_MD_CTX_create();
+	EVP_DigestInit_ex(mdctx, EVP_md5(), NULL);
 	pid = vg_ocl_device_getplatform(vocp->voc_ocldid);
 	str = vg_ocl_platform_getstr(pid, CL_PLATFORM_NAME);
-	MD5_Update(&ctx, str, strlen(str) + 1);
+	EVP_DigestUpdate(mdctx, str, strlen(str) + 1);
 	str = vg_ocl_platform_getstr(pid, CL_PLATFORM_VERSION);
-	MD5_Update(&ctx, str, strlen(str) + 1);
+	EVP_DigestUpdate(mdctx, str, strlen(str) + 1);
 	str = vg_ocl_device_getstr(vocp->voc_ocldid, CL_DEVICE_NAME);
-	MD5_Update(&ctx, str, strlen(str) + 1);
+	EVP_DigestUpdate(mdctx, str, strlen(str) + 1);
 	if (opts)
-		MD5_Update(&ctx, opts, strlen(opts) + 1);
+		EVP_DigestUpdate(mdctx, opts, strlen(opts) + 1);
 	if (size)
-		MD5_Update(&ctx, program, size);
-	MD5_Final(hash_out, &ctx);
+		EVP_DigestUpdate(mdctx, program, size);
+	EVP_DigestFinal_ex(mdctx, hash_out, NULL);
+	EVP_MD_CTX_destroy(mdctx);
 }
 
 typedef struct {
