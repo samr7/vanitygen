@@ -19,7 +19,7 @@ vanitygen.exe: vanitygen.obj pattern.obj util.obj winglue.obj
 	link /nologo /out:$@ $** $(LIBS)
 
 oclvanitygen.exe: oclvanitygen.obj oclengine.obj pattern.obj util.obj winglue.obj
-	link /nologo /out:$@ $** $(LIBS) $(OPENCL_LIBS) $(CURL_LIBS)
+	link /nologo /out:$@ $** $(LIBS) $(OPENCL_LIBS)
 
 oclvanityminer.exe: oclvanityminer.obj oclengine.obj pattern.obj util.obj winglue.obj
 	link /nologo /out:$@ $** $(LIBS) $(OPENCL_LIBS) $(CURL_LIBS)
@@ -37,7 +37,7 @@ oclvanitygen.obj: oclvanitygen.c
 	@$(CC) /nologo $(CFLAGS_BASE) /c /Tpoclvanitygen.c /Fo$@
 
 oclvanityminer.obj: oclvanityminer.c
-	@$(CC) /nologo $(CFLAGS_BASE) $(CURL_INCLUDE) /c /Tpoclvanityminer.c /Fo$@
+	@$(CC) /nologo $(CFLAGS_BASE) $(CURL_INCLUDE) /c /Tpoclvanityminer.c /Fo
 
 clean:
 	del vanitygen.exe oclvanitygen.exe oclvanityminer.exe keyconv.exe $(OBJS)
