@@ -28,7 +28,8 @@ usage(const char *progname)
 "-8            Output key in PKCS#8 form\n"
 "-e            Encrypt output key, prompt for password\n"
 "-E <password> Encrypt output key with <password> (UNSAFE)\n"
-"-c <key>      Combine private key parts to make complete private key",
+"-c <key>      Combine private key parts to make complete private key\n"
+"-v            Verbose output\n",
 		version, progname);
 }
 
@@ -47,10 +48,11 @@ main(int argc, char **argv)
 	int privtype, addrtype;
 	int pkcs8 = 0;
 	int pass_prompt = 0;
+	int verbose = 0;
 	int opt;
 	int res;
 
-	while ((opt = getopt(argc, argv, "8E:ec:")) != -1) {
+	while ((opt = getopt(argc, argv, "8E:ec:v")) != -1) {
 		switch (opt) {
 		case '8':
 			pkcs8 = 1;
@@ -74,6 +76,9 @@ main(int argc, char **argv)
 			break;
 		case 'c':
 			key2_in = optarg;
+			break;
+		case 'v':
+			verbose = 1;
 			break;
 		default:
 			usage(argv[0]);
@@ -149,6 +154,15 @@ main(int argc, char **argv)
 	default:  addrtype = 0; break;
 	}
 
+	if (verbose) {
+		unsigned char *pend = (unsigned char *) pbuf;
+		res = i2o_ECPublicKey(pkey, &pend);
+		fprintf(stderr, "Pubkey (hex): ");
+		dumphex((unsigned char *)pbuf, res);
+		fprintf(stderr, "Privkey (hex): ");
+		dumpbn(EC_KEY_get0_private_key(pkey));
+	}
+			
 	if (pkcs8) {
 		res = vg_pkcs8_encode_privkey(pbuf, sizeof(pbuf),
 					      pkey, pass_in);

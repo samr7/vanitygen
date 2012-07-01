@@ -56,16 +56,24 @@ extern void vg_exec_context_consolidate_key(vg_exec_context_t *vxcp);
 extern void vg_exec_context_calc_address(vg_exec_context_t *vxcp);
 extern EC_KEY *vg_exec_context_new_key(void);
 
-
 /* Implementation-specific lock/unlock/consolidate */
 extern void vg_exec_downgrade_lock(vg_exec_context_t *vxcp);
 extern int vg_exec_upgrade_lock(vg_exec_context_t *vxcp);
 
+
 typedef void (*vg_free_func_t)(vg_context_t *);
 typedef int (*vg_add_pattern_func_t)(vg_context_t *,
-				     char ** const patterns, int npatterns);
+				     const char ** const patterns,
+				     int npatterns);
+typedef void (*vg_clear_all_patterns_func_t)(vg_context_t *);
 typedef int (*vg_test_func_t)(vg_exec_context_t *);
 typedef int (*vg_hash160_sort_func_t)(vg_context_t *vcp, void *buf);
+typedef void (*vg_output_error_func_t)(vg_context_t *vcp, const char *info);
+typedef void (*vg_output_match_func_t)(vg_context_t *vcp, EC_KEY *pkey,
+				       const char *pattern);
+typedef void (*vg_output_timing_func_t)(vg_context_t *vcp, double count,
+					unsigned long long rate,
+					unsigned long long total);
 
 enum vg_format {
 	VCF_PUBKEY,
@@ -84,28 +92,50 @@ struct _vg_context_s {
 	const char		*vc_key_protect_pass;
 	int			vc_remove_on_match;
 	int			vc_verbose;
-	vg_free_func_t		vc_free;
-	vg_add_pattern_func_t	vc_add_patterns;
-	vg_test_func_t		vc_test;
-	vg_hash160_sort_func_t	vc_hash160_sort;
 	enum vg_format		vc_format;
 	int			vc_pubkeytype;
 	EC_POINT		*vc_pubkey_base;
+	int			vc_halt;
+
+	/* Internal methods */
+	vg_free_func_t			vc_free;
+	vg_add_pattern_func_t		vc_add_patterns;
+	vg_clear_all_patterns_func_t	vc_clear_all_patterns;
+	vg_test_func_t			vc_test;
+	vg_hash160_sort_func_t		vc_hash160_sort;
+
+	/* Performance related members */
+	unsigned long long		vc_timing_total;
+	unsigned long long		vc_timing_prevfound;
+	unsigned long long		vc_timing_sincelast;
+	struct _timing_info_s		*vc_timing_head;
+
+	/* External methods */
+	vg_output_error_func_t		vc_output_error;
+	vg_output_match_func_t		vc_output_match;
+	vg_output_timing_func_t		vc_output_timing;
 };
 
 
 extern void vg_context_free(vg_context_t *vcp);
 extern int vg_context_add_patterns(vg_context_t *vcp,
-				   char ** const patterns, int npatterns);
+				   const char ** const patterns, int npatterns);
+extern void vg_context_clear_all_patterns(vg_context_t *vcp);
 extern int vg_context_hash160_sort(vg_context_t *vcp, void *buf);
 
 
 extern vg_context_t *vg_prefix_context_new(int addrtype, int privtype,
 					   int caseinsensitive);
+extern double vg_prefix_get_difficulty(int addrtype, const char *pattern);
+
 extern vg_context_t *vg_regex_context_new(int addrtype, int privtype);
 
 extern int vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last);
-extern void vg_output_match(vg_context_t *vcp, EC_KEY *pkey,
-			    const char *pattern);
+
+extern void vg_output_match_console(vg_context_t *vcp, EC_KEY *pkey,
+				    const char *pattern);
+extern void vg_output_timing_console(vg_context_t *vcp, double count,
+				     unsigned long long rate,
+				     unsigned long long total);
 
 #endif /* !defined (__VG_PATTERN_H__) */

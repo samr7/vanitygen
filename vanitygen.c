@@ -280,7 +280,7 @@ vg_thread_loop(void *arg)
 		hash_len = 65;
 	}
 
-	while (1) {
+	while (!vcp->vc_halt) {
 		if (++npoints >= rekey_at) {
 			pthread_mutex_lock(&vg_thread_lock);
 			/* Generate a new random private key */
@@ -704,7 +704,11 @@ main(int argc, char **argv)
 	vcp->vc_pubkeytype = pubkeytype;
 	vcp->vc_pubkey_base = pubkey_base;
 
-	if (!vg_context_add_patterns(vcp, patterns, npatterns))
+	vcp->vc_output_match = vg_output_match_console;
+	vcp->vc_output_timing = vg_output_timing_console;
+
+	if (!vg_context_add_patterns(vcp, (const char ** const) patterns,
+				     npatterns))
 		return 1;
 
 	if (!vcp->vc_npatterns) {

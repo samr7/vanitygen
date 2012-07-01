@@ -73,11 +73,9 @@ count_processors(void)
  * struct timeval compatibility for Win32
  */
 
-#if defined(_MSC_VER) || defined(_MSC_EXTENSIONS)
-#define DELTA_EPOCH_IN_MICROSECS  11644473600000000Ui64
-#else
-#define DELTA_EPOCH_IN_MICROSECS  11644473600000000ULL
-#endif
+#define TIMESPEC_TO_FILETIME_OFFSET \
+	  ( ((unsigned __int64) 27111902 << 32) + \
+	    (unsigned __int64) 3577643008 )
 
 int
 gettimeofday(struct timeval *tv, struct timezone *tz)
@@ -88,14 +86,13 @@ gettimeofday(struct timeval *tv, struct timezone *tz)
 	if (NULL != tv) {
 		GetSystemTimeAsFileTime(&ft);
 
-		tmpres |= ft.dwHighDateTime;
-		tmpres <<= 32;
-		tmpres |= ft.dwLowDateTime;
-
-		tmpres -= DELTA_EPOCH_IN_MICROSECS; 
-		tmpres /= 10;
-		tv->tv_sec = (long)(tmpres / 1000000UL);
-		tv->tv_usec = (long)(tmpres % 1000000UL);
+		tv->tv_sec = (int) ((*(unsigned __int64 *) &ft -
+				     TIMESPEC_TO_FILETIME_OFFSET) /
+				    10000000);
+		tv->tv_usec = (int) ((*(unsigned __int64 *) &ft - 
+				      TIMESPEC_TO_FILETIME_OFFSET -
+				      ((unsigned __int64) tv->tv_sec *
+				       (unsigned __int64) 10000000)) / 10);
 	}
 
 	return 0;

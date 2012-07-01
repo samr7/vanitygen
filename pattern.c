@@ -141,20 +141,13 @@ typedef struct _timing_info_s {
 int
 vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last)
 {
-	static unsigned long long total = 0, prevfound = 0, sincelast = 0;
 	static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-	static timing_info_t *timing_head = NULL;
 
 	pthread_t me;
 	struct timeval tvnow, tv;
 	timing_info_t *tip, *mytip;
-	unsigned long long rate, myrate = 0, mytime;
-	double count, prob, time, targ;
-	char linebuf[80];
-	char *unit;
-	int rem, p, i;
-
-	const double targs[] = { 0.5, 0.75, 0.8, 0.9, 0.95, 1.0 };
+	unsigned long long rate, myrate = 0, mytime, total, sincelast;
+	int p, i;
 
 	/* Compute the rate */
 	gettimeofday(&tvnow, NULL);
@@ -167,7 +160,8 @@ vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last)
 
 	pthread_mutex_lock(&mutex);
 	me = pthread_self();
-	for (tip = timing_head, mytip = NULL; tip != NULL; tip = tip->ti_next) {
+	for (tip = vcp->vc_timing_head, mytip = NULL;
+	     tip != NULL; tip = tip->ti_next) {
 		if (pthread_equal(tip->ti_thread, me)) {
 			mytip = tip;
 			p = ((tip->ti_hist_last + 1) % timing_hist_size);
@@ -190,9 +184,9 @@ vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last)
 	}
 	if (!mytip) {
 		mytip = (timing_info_t *) malloc(sizeof(*tip));
-		mytip->ti_next = timing_head;
+		mytip->ti_next = vcp->vc_timing_head;
 		mytip->ti_thread = me;
-		timing_head = mytip;
+		vcp->vc_timing_head = mytip;
 		mytip->ti_hist_last = 0;
 		mytip->ti_hist_time[0] = mytime;
 		mytip->ti_hist_work[0] = cycle;
@@ -205,19 +199,46 @@ vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last)
 		rate += myrate;
 	}
 
-	total += cycle;
-	if (prevfound != vcp->vc_found) {
-		prevfound = vcp->vc_found;
-		sincelast = 0;
+	vcp->vc_timing_total += cycle;
+	if (vcp->vc_timing_prevfound != vcp->vc_found) {
+		vcp->vc_timing_prevfound = vcp->vc_found;
+		vcp->vc_timing_sincelast = 0;
 	}
-	sincelast += cycle;
-	count = sincelast;
+	vcp->vc_timing_sincelast += cycle;
 
-	if (mytip != timing_head) {
+	if (mytip != vcp->vc_timing_head) {
 		pthread_mutex_unlock(&mutex);
 		return myrate;
 	}
+	total = vcp->vc_timing_total;
+	sincelast = vcp->vc_timing_sincelast;
 	pthread_mutex_unlock(&mutex);
+
+	vcp->vc_output_timing(vcp, sincelast, rate, total);
+	return myrate;
+}
+
+static void
+vg_timing_info_free(vg_context_t *vcp)
+{
+	timing_info_t *tp;
+	while (vcp->vc_timing_head != NULL) {
+		tp = vcp->vc_timing_head;
+		vcp->vc_timing_head = tp->ti_next;
+		free(tp);
+	}
+}
+
+void
+vg_output_timing_console(vg_context_t *vcp, double count,
+			 unsigned long long rate, unsigned long long total)
+{
+	double prob, time, targ;
+	char *unit;
+	char linebuf[80];
+	int rem, p, i;
+
+	const double targs[] = { 0.5, 0.75, 0.8, 0.9, 0.95, 1.0 };
 
 	targ = rate;
 	unit = "key/s";
@@ -314,11 +335,10 @@ vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last)
 	}
 	printf("\r%s", linebuf);
 	fflush(stdout);
-	return myrate;
 }
 
 void
-vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
+vg_output_match_console(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 {
 	unsigned char key_buf[512], *pend;
 	char addr_buf[64], addr2_buf[64];
@@ -386,6 +406,7 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 			printf("Privkey (ASN1): ");
 			dumphex(key_buf, len);
 		}
+
 	}
 
 	if (!vcp->vc_result_file || (vcp->vc_verbose > 0)) {
@@ -420,18 +441,24 @@ vg_output_match(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 }
 
 
-
 void
 vg_context_free(vg_context_t *vcp)
 {
+	vg_timing_info_free(vcp);
 	vcp->vc_free(vcp);
 }
 
 int
 vg_context_add_patterns(vg_context_t *vcp,
-			char ** const patterns, int npatterns)
+			const char ** const patterns, int npatterns)
 {
 	return vcp->vc_add_patterns(vcp, patterns, npatterns);
+}
+
+void
+vg_context_clear_all_patterns(vg_context_t *vcp)
+{
+	vcp->vc_clear_all_patterns(vcp);
 }
 
 int
@@ -697,6 +724,21 @@ out:
 		BN_free(bnlow2);
 
 	return ret;
+}
+
+static void
+free_ranges(BIGNUM **ranges)
+{
+	BN_free(ranges[0]);
+	BN_free(ranges[1]);
+	ranges[0] = NULL;
+	ranges[1] = NULL;
+	if (ranges[2]) {
+		BN_free(ranges[2]);
+		BN_free(ranges[3]);
+		ranges[2] = NULL;
+		ranges[3] = NULL;
+	}
 }
 
 /*
@@ -1364,7 +1406,7 @@ typedef struct _vg_prefix_context_s {
 } vg_prefix_context_t;
 
 static void
-vg_prefix_context_free(vg_context_t *vcp)
+vg_prefix_context_clear_all_patterns(vg_context_t *vcp)
 {
 	vg_prefix_context_t *vcpp = (vg_prefix_context_t *) vcp;
 	vg_prefix_t *vp;
@@ -1378,6 +1420,17 @@ vg_prefix_context_free(vg_context_t *vcp)
 	}
 
 	assert(npfx_left == vcpp->base.vc_npatterns);
+	vcpp->base.vc_npatterns = 0;
+	vcpp->base.vc_npatterns_start = 0;
+	vcpp->base.vc_found = 0;
+	BN_clear(&vcpp->vcp_difficulty);
+}
+
+static void
+vg_prefix_context_free(vg_context_t *vcp)
+{
+	vg_prefix_context_t *vcpp = (vg_prefix_context_t *) vcp;
+	vg_prefix_context_clear_all_patterns(vcp);
 	BN_clear_free(&vcpp->vcp_difficulty);
 	free(vcpp);
 }
@@ -1407,7 +1460,7 @@ vg_prefix_context_next_difficulty(vg_prefix_context_t *vcpp,
 
 static int
 vg_prefix_context_add_patterns(vg_context_t *vcp,
-			       char ** const patterns, int npatterns)
+			       const char ** const patterns, int npatterns)
 {
 	vg_prefix_context_t *vcpp = (vg_prefix_context_t *) vcp;
 	prefix_case_iter_t caseiter;
@@ -1556,6 +1609,47 @@ vg_prefix_context_add_patterns(vg_context_t *vcp,
 	return ret;
 }
 
+double
+vg_prefix_get_difficulty(int addrtype, const char *pattern)
+{
+	BN_CTX *bnctx;
+	BIGNUM result, bntmp;
+	BIGNUM *ranges[4];
+	char *dbuf;
+	int ret;
+	double diffret = 0.0;
+
+	bnctx = BN_CTX_new();
+	BN_init(&result);
+	BN_init(&bntmp);
+
+	ret = get_prefix_ranges(addrtype,
+				pattern, ranges, bnctx);
+
+	if (ret == 0) {
+		BN_sub(&bntmp, ranges[1], ranges[0]);
+		BN_add(&result, &result, &bntmp);
+		if (ranges[2]) {
+			BN_sub(&bntmp, ranges[3], ranges[2]);
+			BN_add(&result, &result, &bntmp);
+		}
+		free_ranges(ranges);
+
+		BN_clear(&bntmp);
+		BN_set_bit(&bntmp, 192);
+		BN_div(&result, NULL, &bntmp, &result, bnctx);
+
+		dbuf = BN_bn2dec(&result);
+		diffret = strtod(dbuf, NULL);
+		OPENSSL_free(dbuf);
+	}
+
+	BN_clear_free(&result);
+	BN_clear_free(&bntmp);
+	BN_CTX_free(bnctx);
+	return diffret;
+}
+
 
 static int
 vg_prefix_test(vg_exec_context_t *vxcp)
@@ -1579,7 +1673,8 @@ research:
 			goto research;
 
 		vg_exec_context_consolidate_key(vxcp);
-		vg_output_match(&vcpp->base, vxcp->vxc_key, vp->vp_pattern);
+		vcpp->base.vc_output_match(&vcpp->base, vxcp->vxc_key,
+					   vp->vp_pattern);
 
 		vcpp->base.vc_found++;
 
@@ -1673,6 +1768,8 @@ vg_prefix_context_new(int addrtype, int privtype, int caseinsensitive)
 		vcpp->base.vc_chance = 0.0;
 		vcpp->base.vc_free = vg_prefix_context_free;
 		vcpp->base.vc_add_patterns = vg_prefix_context_add_patterns;
+		vcpp->base.vc_clear_all_patterns =
+			vg_prefix_context_clear_all_patterns;
 		vcpp->base.vc_test = vg_prefix_test;
 		vcpp->base.vc_hash160_sort = vg_prefix_hash160_sort;
 		avl_root_init(&vcpp->vcp_avlroot);
@@ -1695,7 +1792,7 @@ typedef struct _vg_regex_context_s {
 
 static int
 vg_regex_context_add_patterns(vg_context_t *vcp,
-			      char ** const patterns, int npatterns)
+			      const char ** const patterns, int npatterns)
 {
 	vg_regex_context_t *vcrp = (vg_regex_context_t *) vcp;
 	const char *pcre_errptr;
@@ -1770,7 +1867,7 @@ vg_regex_context_add_patterns(vg_context_t *vcp,
 }
 
 static void
-vg_regex_context_free(vg_context_t *vcp)
+vg_regex_context_clear_all_patterns(vg_context_t *vcp)
 {
 	vg_regex_context_t *vcrp = (vg_regex_context_t *) vcp;
 	int i;
@@ -1779,6 +1876,16 @@ vg_regex_context_free(vg_context_t *vcp)
 			pcre_free(vcrp->vcr_regex_extra[i]);
 		pcre_free(vcrp->vcr_regex[i]);
 	}
+	vcrp->base.vc_npatterns = 0;
+	vcrp->base.vc_npatterns_start = 0;
+	vcrp->base.vc_found = 0;
+}
+
+static void
+vg_regex_context_free(vg_context_t *vcp)
+{
+	vg_regex_context_t *vcrp = (vg_regex_context_t *) vcp;
+	vg_regex_context_clear_all_patterns(vcp);
 	if (vcrp->vcr_nalloc)
 		free(vcrp->vcr_regex);
 	free(vcrp);
@@ -1860,8 +1967,8 @@ restart_loop:
 			goto restart_loop;
 
 		vg_exec_context_consolidate_key(vxcp);
-		vg_output_match(&vcrp->base, vxcp->vxc_key,
-				vcrp->vcr_regex_pat[i]);
+		vcrp->base.vc_output_match(&vcrp->base, vxcp->vxc_key,
+					   vcrp->vcr_regex_pat[i]);
 		vcrp->base.vc_found++;
 
 		if (vcrp->base.vc_remove_on_match) {
@@ -1902,6 +2009,8 @@ vg_regex_context_new(int addrtype, int privtype)
 		vcrp->base.vc_chance = 0.0;
 		vcrp->base.vc_free = vg_regex_context_free;
 		vcrp->base.vc_add_patterns = vg_regex_context_add_patterns;
+		vcrp->base.vc_clear_all_patterns =
+			vg_regex_context_clear_all_patterns;
 		vcrp->base.vc_test = vg_regex_test;
 		vcrp->base.vc_hash160_sort = NULL;
 		vcrp->vcr_regex = NULL;
