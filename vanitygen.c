@@ -392,6 +392,7 @@ vg_thread_loop(void *arg)
 
 out:
 	vg_thread_context_del(&ctx);
+	vg_context_thread_exit(vcp);
 
 	for (i = 0; i < ptarraysize; i++)
 		if (ppnt[i])

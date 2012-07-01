@@ -2189,6 +2189,7 @@ l_rekey:
 	vg_ocl_free_args(vocp);
 	vocp->voc_halt = 0;
 	vocp->voc_ocl_slot = -1;
+	vg_context_thread_exit(vcp);
 	return NULL;
 }
 

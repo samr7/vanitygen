@@ -122,6 +122,7 @@ extern int vg_context_add_patterns(vg_context_t *vcp,
 				   const char ** const patterns, int npatterns);
 extern void vg_context_clear_all_patterns(vg_context_t *vcp);
 extern int vg_context_hash160_sort(vg_context_t *vcp, void *buf);
+extern void vg_context_thread_exit(vg_context_t *vcp);
 
 
 extern vg_context_t *vg_prefix_context_new(int addrtype, int privtype,

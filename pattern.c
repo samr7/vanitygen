@@ -138,11 +138,11 @@ typedef struct _timing_info_s {
 	int			ti_hist_last;
 } timing_info_t;
 
+static pthread_mutex_t timing_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 int
 vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last)
 {
-	static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-
 	pthread_t me;
 	struct timeval tvnow, tv;
 	timing_info_t *tip, *mytip;
@@ -158,7 +158,7 @@ vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last)
 		mytime = 1;
 	rate = 0;
 
-	pthread_mutex_lock(&mutex);
+	pthread_mutex_lock(&timing_mutex);
 	me = pthread_self();
 	for (tip = vcp->vc_timing_head, mytip = NULL;
 	     tip != NULL; tip = tip->ti_next) {
@@ -207,15 +207,36 @@ vg_output_timing(vg_context_t *vcp, int cycle, struct timeval *last)
 	vcp->vc_timing_sincelast += cycle;
 
 	if (mytip != vcp->vc_timing_head) {
-		pthread_mutex_unlock(&mutex);
+		pthread_mutex_unlock(&timing_mutex);
 		return myrate;
 	}
 	total = vcp->vc_timing_total;
 	sincelast = vcp->vc_timing_sincelast;
-	pthread_mutex_unlock(&mutex);
+	pthread_mutex_unlock(&timing_mutex);
 
 	vcp->vc_output_timing(vcp, sincelast, rate, total);
 	return myrate;
+}
+
+void
+vg_context_thread_exit(vg_context_t *vcp)
+{
+	timing_info_t *tip, **ptip;
+	pthread_t me;
+
+	pthread_mutex_lock(&timing_mutex);
+	me = pthread_self();
+	for (ptip = &vcp->vc_timing_head, tip = *ptip;
+	     tip != NULL;
+	     ptip = &tip->ti_next, tip = *ptip) {
+		if (!pthread_equal(tip->ti_thread, me))
+			continue;
+		*ptip = tip->ti_next;
+		free(tip);
+		break;
+	}
+	pthread_mutex_unlock(&timing_mutex);
+
 }
 
 static void
