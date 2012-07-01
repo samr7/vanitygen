@@ -208,7 +208,7 @@ server_workitem_add(server_request_t *reqp, workitem_t *wip)
 }
 
 
-static int
+static size_t
 server_body_reader(const char *buf, size_t elemsize, size_t len, void *param)
 {
 	server_request_t *reqp = (server_request_t *) param;
@@ -235,14 +235,14 @@ server_body_reader(const char *buf, size_t elemsize, size_t len, void *param)
 			if (reqp->part_size > (1024*1024)) {
 				fprintf(stderr, "Line too long from server");
 				reqp->request_status = 0;
-				return -1;
+				return 0;
 			}
 		}
 		reqp->part_buf = (char *) realloc(reqp->part_buf,
 						  reqp->part_size);
 		if (!reqp->part_buf) {
 			fprintf(stderr, "Out of memory");
-			return -1;
+			return 0;
 		}
 	}
 
@@ -329,12 +329,24 @@ free_work_array(workitem_t **workarray, workitem_t *except)
 	}
 }
 
-workitem_t **
-server_context_getwork(server_context_t *ctxp)
+void
+server_request_free(server_request_t *reqp)
+{
+	if (reqp->part_buf != NULL)
+		free(reqp->part_buf);
+	if (reqp->items)
+		free_work_array(reqp->items, NULL);
+	free(reqp);
+}
+
+int
+server_context_getwork(server_context_t *ctxp, workitem_t ***arrayret)
 {
 	CURLcode res;
 	server_request_t *reqp;
 	CURL *creq;
+
+	*arrayret = NULL;
 
 	reqp = (server_request_t *) malloc(sizeof(*reqp));
 	memset(reqp, 0, sizeof(*reqp));
@@ -352,22 +364,23 @@ server_context_getwork(server_context_t *ctxp)
 	}
 
 	res = curl_easy_perform(creq);
+	curl_easy_cleanup(creq);
+
 	if (res != CURLE_OK) {
 		fprintf(stderr, "Get work request failed: %s\n",
 			curl_easy_strerror(res));
-		curl_easy_cleanup(creq);
-		free_work_array(reqp->items, NULL);
-		return NULL;
+		server_request_free(reqp);
+		return -1;
 	}
 
 	if (reqp->items) {
+		reqp->items[reqp->nitems] = NULL;
 		qsort(reqp->items, reqp->nitems, sizeof(*(reqp->items)),
 		      server_workitem_ptr_comp);
-		reqp->items[reqp->nitems] = NULL;
+		*arrayret = reqp->items;
 	}
 
-	curl_easy_cleanup(creq);
-	return reqp->items;
+	return 0;
 }
 
 
@@ -519,7 +532,7 @@ main(int argc, char **argv)
 
 	server_context_t *scp = NULL;
 	workitem_t *wip = NULL, **wipa;
-	int wip_index;
+	int wip_index = 0;
 	int was_sleeping = 0;
 
 	struct timeval tv;
@@ -550,11 +563,12 @@ main(int argc, char **argv)
 			break;
 		case 'i':
 			interval = atoi(optarg);
-			if (interval < 60) {
+			if (interval < 10) {
 				fprintf(stderr,
 					"Invalid interval '%s'\n", optarg);
 				return 1;
 			}
+			break;
 		case 'p':
 			platformidx = atoi(optarg);
 			break;
@@ -651,9 +665,13 @@ main(int argc, char **argv)
 	scp->verbose = verbose;
 	wipa = NULL;
 
+	/* Get the initial bounty list, abort on failure */
+	if (server_context_getwork(scp, &wipa))
+		return 1;
+
 	while (1) {
-		if (!wipa) {
-			wipa = server_context_getwork(scp);
+		if (!wipa || !wipa[wip_index]) {
+			server_context_getwork(scp, &wipa);
 			wip_index = 0;
 		}
 
@@ -727,6 +745,7 @@ main(int argc, char **argv)
 		sleepy.tv_sec += interval;
 
 		pthread_mutex_lock(&soln_lock);
+		res = 0;
 		if (!soln_private_key)
 			res = pthread_cond_timedwait(&soln_cond,
 						     &soln_lock, &sleepy);
