@@ -26,6 +26,7 @@ usage(const char *progname)
 	fprintf(stderr,
 "Vanitygen keyconv %s\n"
 "Usage: %s [-8] [-e|-E <password>] [-c <key>] [<key>]\n"
+"-G            Generate a key pair and output the full public key\n"
 "-8            Output key in PKCS#8 form\n"
 "-e            Encrypt output key, prompt for password\n"
 "-E <password> Encrypt output key with <password> (UNSAFE)\n"
@@ -50,10 +51,11 @@ main(int argc, char **argv)
 	int pkcs8 = 0;
 	int pass_prompt = 0;
 	int verbose = 0;
+	int generate = 0;
 	int opt;
 	int res;
 
-	while ((opt = getopt(argc, argv, "8E:ec:v")) != -1) {
+	while ((opt = getopt(argc, argv, "8E:ec:vG")) != -1) {
 		switch (opt) {
 		case '8':
 			pkcs8 = 1;
@@ -81,10 +83,36 @@ main(int argc, char **argv)
 		case 'v':
 			verbose = 1;
 			break;
+		case 'G':
+			generate = 1;
+			break;
 		default:
 			usage(argv[0]);
 			return 1;
 		}
+	}
+
+	OpenSSL_add_all_algorithms();
+
+	pkey = EC_KEY_new_by_curve_name(NID_secp256k1);
+
+	if (generate) {
+		unsigned char *pend = (unsigned char *) pbuf;
+		addrtype = 0;
+		privtype = 128;
+		EC_KEY_generate_key(pkey);
+		res = i2o_ECPublicKey(pkey, &pend);
+		fprintf(stderr, "Pubkey (hex): ");
+		dumphex((unsigned char *)pbuf, res);
+		fprintf(stderr, "Privkey (hex): ");
+		dumpbn(EC_KEY_get0_private_key(pkey));
+		vg_encode_address(EC_KEY_get0_public_key(pkey),
+				  EC_KEY_get0_group(pkey),
+				  addrtype, ecprot);
+		printf("Address: %s\n", ecprot);
+		vg_encode_privkey(pkey, privtype, ecprot);
+		printf("Privkey: %s\n", ecprot);
+		return 0;
 	}
 
 	if (optind >= argc) {
@@ -94,10 +122,6 @@ main(int argc, char **argv)
 	} else {
 		key_in = argv[optind];
 	}
-
-	OpenSSL_add_all_algorithms();
-
-	pkey = EC_KEY_new_by_curve_name(NID_secp256k1);
 
 	res = vg_decode_privkey_any(pkey, &privtype, key_in, NULL);
 	if (res < 0) {
@@ -113,7 +137,8 @@ main(int argc, char **argv)
 	}
 
 	if (key2_in) {
-		BIGNUM bntmp;
+		BN_CTX *bnctx;
+		BIGNUM bntmp, bntmp2;
 		EC_KEY *pkey2;
 
 		pkey2 = EC_KEY_new_by_curve_name(NID_secp256k1);
@@ -131,12 +156,19 @@ main(int argc, char **argv)
 			return 1;
 		}
 		BN_init(&bntmp);
-		BN_add(&bntmp,
-		       EC_KEY_get0_private_key(pkey),
-		       EC_KEY_get0_private_key(pkey2));
+		BN_init(&bntmp2);
+		bnctx = BN_CTX_new();
+		EC_GROUP_get_order(EC_KEY_get0_group(pkey), &bntmp2, NULL);
+		BN_mod_add(&bntmp,
+			   EC_KEY_get0_private_key(pkey),
+			   EC_KEY_get0_private_key(pkey2),
+			   &bntmp2,
+			   bnctx);
 		vg_set_privkey(&bntmp, pkey);
 		EC_KEY_free(pkey2);
 		BN_clear_free(&bntmp);
+		BN_clear_free(&bntmp2);
+		BN_CTX_free(bnctx);
 	}
 
 	if (pass_prompt) {
