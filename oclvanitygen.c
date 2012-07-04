@@ -49,8 +49,6 @@ usage(const char *name)
 "Options:\n"
 "-v            Verbose output\n"
 "-q            Quiet output\n"
-"-r            Use regular expression match instead of prefix\n"
-"              (Feasibility of expression is not checked)\n"
 "-i            Case-insensitive prefix search\n"
 "-k            Keep pattern and continue search after finding a match\n"
 "-N            Generate namecoin address\n"
@@ -103,16 +101,13 @@ main(int argc, char **argv)
 	const char *key_password = NULL;
 
 	while ((opt = getopt(argc, argv,
-			     "vqrikNTX:eE:p:P:d:w:t:g:b:VSh?f:o:s:")) != -1) {
+			     "vqikNTX:eE:p:P:d:w:t:g:b:VSh?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
 			break;
 		case 'q':
 			verbose = 0;
-			break;
-		case 'r':
-			regex = 1;
 			break;
 		case 'i':
 			caseinsensitive = 1;
