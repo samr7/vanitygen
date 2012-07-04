@@ -14,9 +14,10 @@
 #include "winglue.h"
 #endif
 
+#include "pattern.h"
 #include "util.h"
 
-const char *version = "0.17";
+const char *version = VANITYGEN_VERSION;
 
 
 static void

@@ -32,7 +32,7 @@
 #include "pattern.h"
 #include "util.h"
 
-const char *version = "0.17";
+const char *version = VANITYGEN_VERSION;
 
 typedef struct _vg_thread_context_s {
 	vg_exec_context_t		base;

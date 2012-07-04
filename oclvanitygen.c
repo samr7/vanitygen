@@ -30,7 +30,7 @@
 #include "util.h"
 
 
-const char *version = "0.17";
+const char *version = VANITYGEN_VERSION;
 const int debug = 0;
 
 
