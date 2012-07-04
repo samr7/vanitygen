@@ -1781,6 +1781,7 @@ vg_prefix_context_new(int addrtype, int privtype, int caseinsensitive)
 
 	vcpp = (vg_prefix_context_t *) malloc(sizeof(*vcpp));
 	if (vcpp) {
+		memset(vcpp, 0, sizeof(*vcpp));
 		vcpp->base.vc_addrtype = addrtype;
 		vcpp->base.vc_privtype = privtype;
 		vcpp->base.vc_npatterns = 0;
@@ -2022,6 +2023,7 @@ vg_regex_context_new(int addrtype, int privtype)
 
 	vcrp = (vg_regex_context_t *) malloc(sizeof(*vcrp));
 	if (vcrp) {
+		memset(vcrp, 0, sizeof(*vcrp));
 		vcrp->base.vc_addrtype = addrtype;
 		vcrp->base.vc_privtype = privtype;
 		vcrp->base.vc_npatterns = 0;
