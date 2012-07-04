@@ -1,8 +1,5 @@
-Linux:
-make vanitygen oclvanitygen
-
-OSX:
-make -f Makefile.osx vanitygen oclvanitygen
+Linux/OSX with GNU make:
+make
 
 Windows:
 Tools: Microsoft Visual Studio 2010, Visual C++
