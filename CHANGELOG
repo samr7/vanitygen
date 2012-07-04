@@ -79,3 +79,12 @@ Version 0.17, released August 8, 2011:
 	- New oclvanitygen add/subtract/compare functions for AMD Radeon
 	- Add support for AMD BFI_INT instruction in oclvanitygen hash functions
 	- Minor source code reorganization
+
+Version 0.18, released July 4, 2012:
+	- Support additive base public keys for outsourced address generation.
+	- New oclvanityminer program, organized address miner for use with
+	  bounty pools, like ThePiachu's Vanity Pool.
+	- New keyconv program for converting bitcoin private keys between
+	  wallet import format, password-protected format, and PKCS#8.
+	- Support generation of simple P2SH (type-3) addresses.
+	- Mac OS X makefile merged with Linux Makefile.
