@@ -88,3 +88,7 @@ Version 0.18, released July 4, 2012:
 	  wallet import format, password-protected format, and PKCS#8.
 	- Support generation of simple P2SH (type-3) addresses.
 	- Mac OS X makefile merged with Linux Makefile.
+
+Version 0.19, released July 4, 2012:
+	- Fix a potentially serious crash.
+	- Remove oclvanitygen "-r" option.
