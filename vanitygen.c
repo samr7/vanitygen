@@ -512,7 +512,7 @@ main(int argc, char **argv)
 	vg_context_t *vcp = NULL;
 	EC_POINT *pubkey_base = NULL;
 
-	while ((opt = getopt(argc, argv, "vqrikeE:P:NTXF:t:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqrikeE:P:NTX:F:t:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
