@@ -1511,9 +1511,9 @@ static const unsigned char b58_case_map[256] = {
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0,
+	0, 1, 1, 1, 1, 1, 1, 1, 1, 105, 1, 1, 0, 1, 1, 111,
 	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0,
-	0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0,
+	0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 76, 1, 1, 0,
 	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0,
 };
 
@@ -1529,6 +1529,10 @@ prefix_case_iter_init(prefix_case_iter_t *cip, const char *pfx)
 			return 0;
 		if (!b58_case_map[(int)pfx[i]]) {
 			cip->ci_prefix[i] = pfx[i];
+			continue;
+		}
+		if (b58_case_map[(int)pfx[i]] > 1) {
+			cip->ci_prefix[i] = b58_case_map[(int)pfx[i]];
 			continue;
 		}
 		cip->ci_prefix[i] = pfx[i] | 0x20;
