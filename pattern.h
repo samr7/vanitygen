@@ -33,7 +33,7 @@
 #include <unistd.h>
 #endif
 
-#define VANITYGEN_VERSION "0.19"
+#define VANITYGEN_VERSION "0.20pre"
 
 
 typedef struct _vg_context_s vg_context_t;
@@ -49,6 +49,11 @@ typedef struct _vg_exec_context_s {
 	BIGNUM				vxc_bnbase;
 	BIGNUM				vxc_bntmp;
 	BIGNUM				vxc_bntmp2;
+
+	/* Thread synchronization */
+	struct _vg_exec_context_s	*vxc_next;
+	int				vxc_lockmode;
+	int				vxc_stop;
 } vg_exec_context_t;
 
 /* Init/cleanup for common execution context */
@@ -58,9 +63,10 @@ extern void vg_exec_context_consolidate_key(vg_exec_context_t *vxcp);
 extern void vg_exec_context_calc_address(vg_exec_context_t *vxcp);
 extern EC_KEY *vg_exec_context_new_key(void);
 
-/* Implementation-specific lock/unlock/consolidate */
-extern void vg_exec_downgrade_lock(vg_exec_context_t *vxcp);
-extern int vg_exec_upgrade_lock(vg_exec_context_t *vxcp);
+/* Execution context lock handling functions */
+extern void vg_exec_context_downgrade_lock(vg_exec_context_t *vxcp);
+extern int vg_exec_context_upgrade_lock(vg_exec_context_t *vxcp);
+extern void vg_exec_context_yield(vg_exec_context_t *vxcp);
 
 
 typedef void (*vg_free_func_t)(vg_context_t *);
@@ -89,6 +95,7 @@ struct _vg_context_s {
 	unsigned long		vc_npatterns;
 	unsigned long		vc_npatterns_start;
 	unsigned long long	vc_found;
+	int			vc_pattern_generation;
 	double			vc_chance;
 	const char		*vc_result_file;
 	const char		*vc_key_protect_pass;

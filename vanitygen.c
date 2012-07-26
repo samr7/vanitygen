@@ -34,169 +34,6 @@
 
 const char *version = VANITYGEN_VERSION;
 
-typedef struct _vg_thread_context_s {
-	vg_exec_context_t		base;
-	struct _vg_thread_context_s	*vt_next;
-	int				vt_mode;
-	int				vt_stop;
-} vg_thread_context_t;
-
-
-/*
- * To synchronize pattern lists, we use a special shared-exclusive lock
- * geared toward being held in shared mode 99.9% of the time.
- */
-
-static pthread_mutex_t vg_thread_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t vg_thread_rdcond = PTHREAD_COND_INITIALIZER;
-static pthread_cond_t vg_thread_wrcond = PTHREAD_COND_INITIALIZER;
-static pthread_cond_t vg_thread_upcond = PTHREAD_COND_INITIALIZER;
-static vg_thread_context_t *vg_threads = NULL;
-static int vg_thread_excl = 0;
-
-void
-__vg_thread_yield(vg_thread_context_t *vtcp)
-{
-	vtcp->vt_mode = 0;
-	while (vg_thread_excl) {
-		if (vtcp->vt_stop) {
-			assert(vg_thread_excl);
-			vtcp->vt_stop = 0;
-			pthread_cond_signal(&vg_thread_upcond);
-		}
-		pthread_cond_wait(&vg_thread_rdcond, &vg_thread_lock);
-	}
-	assert(!vtcp->vt_stop);
-	assert(!vtcp->vt_mode);
-	vtcp->vt_mode = 1;
-}
-
-void
-vg_thread_context_init(vg_context_t *vcp, vg_thread_context_t *vtcp)
-{
-	vtcp->vt_mode = 0;
-	vtcp->vt_stop = 0;
-
-	pthread_mutex_lock(&vg_thread_lock);
-	vg_exec_context_init(vcp, &vtcp->base);
-	vtcp->vt_next = vg_threads;
-	vg_threads = vtcp;
-	__vg_thread_yield(vtcp);
-	pthread_mutex_unlock(&vg_thread_lock);
-}
-
-void
-vg_thread_context_del(vg_thread_context_t *vtcp)
-{
-	vg_thread_context_t *tp, **pprev;
-
-	if (vtcp->vt_mode == 2)
-		vg_exec_downgrade_lock(&vtcp->base);
-
-	pthread_mutex_lock(&vg_thread_lock);
-	assert(vtcp->vt_mode == 1);
-	vtcp->vt_mode = 0;
-
-	for (pprev = &vg_threads, tp = *pprev;
-	     (tp != vtcp) && (tp != NULL);
-	     pprev = &tp->vt_next, tp = *pprev);
-
-	assert(tp == vtcp);
-	*pprev = tp->vt_next;
-
-	if (tp->vt_stop)
-		pthread_cond_signal(&vg_thread_upcond);
-
-	vg_exec_context_del(&vtcp->base);
-	pthread_mutex_unlock(&vg_thread_lock);
-}
-
-void
-vg_thread_yield(vg_thread_context_t *vtcp)
-{
-	if (vtcp->vt_mode == 2)
-		vg_exec_downgrade_lock(&vtcp->base);
-
-	else if (vtcp->vt_stop) {
-		assert(vtcp->vt_mode == 1);
-		pthread_mutex_lock(&vg_thread_lock);
-		__vg_thread_yield(vtcp);
-		pthread_mutex_unlock(&vg_thread_lock);
-	}
-
-	assert(vtcp->vt_mode == 1);
-}
-
-
-
-void
-vg_exec_downgrade_lock(vg_exec_context_t *vxcp)
-{
-	vg_thread_context_t *vtcp = (vg_thread_context_t *) vxcp;
-	pthread_mutex_lock(&vg_thread_lock);
-
-	assert(vtcp->vt_mode == 2);
-	assert(!vtcp->vt_stop);
-	if (!--vg_thread_excl) {
-		vtcp->vt_mode = 1;
-		pthread_cond_broadcast(&vg_thread_rdcond);
-		pthread_mutex_unlock(&vg_thread_lock);
-		return;
-	}
-	pthread_cond_signal(&vg_thread_wrcond);
-	__vg_thread_yield(vtcp);
-	pthread_mutex_unlock(&vg_thread_lock);
-}
-
-int
-vg_exec_upgrade_lock(vg_exec_context_t *vxcp)
-{
-	vg_thread_context_t *vtcp = (vg_thread_context_t *) vxcp;
-	vg_thread_context_t *tp;
-
-	if (vtcp->vt_mode == 2)
-		return 0;
-
-	pthread_mutex_lock(&vg_thread_lock);
-
-	assert(vtcp->vt_mode == 1);
-	vtcp->vt_mode = 0;
-
-	if (vg_thread_excl++) {
-		assert(vtcp->vt_stop);
-		vtcp->vt_stop = 0;
-		pthread_cond_signal(&vg_thread_upcond);
-		pthread_cond_wait(&vg_thread_wrcond, &vg_thread_lock);
-
-		for (tp = vg_threads; tp != NULL; tp = tp->vt_next) {
-			assert(!tp->vt_mode);
-			assert(!tp->vt_stop);
-		}
-
-	} else {
-		for (tp = vg_threads; tp != NULL; tp = tp->vt_next) {
-			if (tp->vt_mode) {
-				assert(tp->vt_mode != 2);
-				tp->vt_stop = 1;
-			}
-		}
-
-		do {
-			for (tp = vg_threads; tp != NULL; tp = tp->vt_next) {
-				if (tp->vt_mode) {
-					assert(tp->vt_mode != 2);
-					pthread_cond_wait(&vg_thread_upcond,
-							  &vg_thread_lock);
-					break;
-				}
-			}
-		} while (tp);
-	}
-
-	vtcp->vt_mode = 2;
-	pthread_mutex_unlock(&vg_thread_lock);
-	return 1;
-}
 
 /*
  * Address search thread main loop
@@ -224,16 +61,16 @@ vg_thread_loop(void *arg)
 	EC_POINT *pbatchinc;
 
 	vg_test_func_t test_func = vcp->vc_test;
-	vg_thread_context_t ctx;
+	vg_exec_context_t ctx;
 	vg_exec_context_t *vxcp;
 
 	struct timeval tvstart;
 
 
 	memset(&ctx, 0, sizeof(ctx));
-	vxcp = &ctx.base;
+	vxcp = &ctx;
 
-	vg_thread_context_init(vcp, &ctx);
+	vg_exec_context_init(vcp, &ctx);
 
 	pkey = vxcp->vxc_key;
 	pgroup = EC_KEY_get0_group(pkey);
@@ -282,7 +119,7 @@ vg_thread_loop(void *arg)
 
 	while (!vcp->vc_halt) {
 		if (++npoints >= rekey_at) {
-			pthread_mutex_lock(&vg_thread_lock);
+			vg_exec_context_upgrade_lock(vxcp);
 			/* Generate a new random private key */
 			EC_KEY_generate_key(pkey);
 			npoints = 0;
@@ -299,7 +136,7 @@ vg_thread_loop(void *arg)
 			assert(rekey_at > 0);
 
 			EC_POINT_copy(ppnt[0], EC_KEY_get0_public_key(pkey));
-			pthread_mutex_unlock(&vg_thread_lock);
+			vg_exec_context_downgrade_lock(vxcp);
 
 			npoints++;
 			vxcp->vxc_delta = 0;
@@ -387,11 +224,11 @@ vg_thread_loop(void *arg)
 			c = 0;
 		}
 
-		vg_thread_yield(&ctx);
+		vg_exec_context_yield(vxcp);
 	}
 
 out:
-	vg_thread_context_del(&ctx);
+	vg_exec_context_del(&ctx);
 	vg_context_thread_exit(vcp);
 
 	for (i = 0; i < ptarraysize; i++)

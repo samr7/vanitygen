@@ -1571,7 +1571,6 @@ vg_ocl_prefix_check(vg_ocl_context_t *vocp, int slot)
 			       found_delta, orig_delta);
 			res = 1;
 		}
-		vocp->voc_pattern_rewrite = 1;
 	} else {
 		vxcp->vxc_delta += (vocp->voc_ocl_cols * vocp->voc_ocl_rows);
 	}
@@ -1879,6 +1878,7 @@ vg_opencl_loop(void *arg)
 	vg_ocl_context_t *vocp = (vg_ocl_context_t *) arg;
 	int i;
 	int round, nrows, ncols;
+	int pattern_generation;
 
 	const BN_ULONG rekey_max = 100000000;
 	BN_ULONG npoints, rekey_at;
@@ -1991,6 +1991,10 @@ l_rekey:
 	    !vocp->voc_rekey_func(vocp))
 		goto enomem;
 
+	vg_exec_context_upgrade_lock(vxcp);
+
+	pattern_generation = vcp->vc_pattern_generation;
+
 	/* Generate a new random private key */
 	EC_KEY_generate_key(pkey);
 	npoints = 0;
@@ -2006,6 +2010,8 @@ l_rekey:
 	assert(rekey_at > 0);
 
 	EC_POINT_copy(ppbase[0], EC_KEY_get0_public_key(pkey));
+
+	vg_exec_context_downgrade_lock(vxcp);
 
 	if (vcp->vc_pubkey_base) {
 		EC_POINT_add(pgroup,
@@ -2075,6 +2081,15 @@ l_rekey:
 				output_interval =
 					vg_output_timing(vcp, c, &tvstart);
 				c = 0;
+			}
+			vg_exec_context_yield(vxcp);
+
+			/* If the patterns changed, reload it to the GPU */
+			if (vocp->voc_rekey_func &&
+			    (pattern_generation !=
+			     vcp->vc_pattern_generation)) {
+				vocp->voc_pattern_rewrite = 1;
+				rekey_at = 0;
 			}
 		}
 
@@ -2175,6 +2190,8 @@ l_rekey:
 		if (vcp->vc_verbose > 1)
 			printf("done!\n");
 	}
+
+	vg_exec_context_yield(vxcp);
 
 	if (ppbase) {
 		for (i = 0; i < (nrows + ncols); i++)

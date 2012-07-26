@@ -45,9 +45,106 @@ vg_exec_context_new_key(void)
 	return EC_KEY_new_by_curve_name(NID_secp256k1);
 }
 
+/*
+ * Thread synchronization helpers
+ */
+
+static pthread_mutex_t vg_thread_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t vg_thread_rdcond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t vg_thread_wrcond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t vg_thread_upcond = PTHREAD_COND_INITIALIZER;
+static vg_exec_context_t *vg_threads = NULL;
+static int vg_thread_excl = 0;
+
+static void
+__vg_exec_context_yield(vg_exec_context_t *vxcp)
+{
+	vxcp->vxc_lockmode = 0;
+	while (vg_thread_excl) {
+		if (vxcp->vxc_stop) {
+			assert(vg_thread_excl);
+			vxcp->vxc_stop = 0;
+			pthread_cond_signal(&vg_thread_upcond);
+		}
+		pthread_cond_wait(&vg_thread_rdcond, &vg_thread_lock);
+	}
+	assert(!vxcp->vxc_stop);
+	assert(!vxcp->vxc_lockmode);
+	vxcp->vxc_lockmode = 1;
+}
+
+int
+vg_exec_context_upgrade_lock(vg_exec_context_t *vxcp)
+{
+	vg_exec_context_t *tp;
+
+	if (vxcp->vxc_lockmode == 2)
+		return 0;
+
+	pthread_mutex_lock(&vg_thread_lock);
+
+	assert(vxcp->vxc_lockmode == 1);
+	vxcp->vxc_lockmode = 0;
+
+	if (vg_thread_excl++) {
+		assert(vxcp->vxc_stop);
+		vxcp->vxc_stop = 0;
+		pthread_cond_signal(&vg_thread_upcond);
+		pthread_cond_wait(&vg_thread_wrcond, &vg_thread_lock);
+
+		for (tp = vg_threads; tp != NULL; tp = tp->vxc_next) {
+			assert(!tp->vxc_lockmode);
+			assert(!tp->vxc_stop);
+		}
+
+	} else {
+		for (tp = vg_threads; tp != NULL; tp = tp->vxc_next) {
+			if (tp->vxc_lockmode) {
+				assert(tp->vxc_lockmode != 2);
+				tp->vxc_stop = 1;
+			}
+		}
+
+		do {
+			for (tp = vg_threads; tp != NULL; tp = tp->vxc_next) {
+				if (tp->vxc_lockmode) {
+					assert(tp->vxc_lockmode != 2);
+					pthread_cond_wait(&vg_thread_upcond,
+							  &vg_thread_lock);
+					break;
+				}
+			}
+		} while (tp);
+	}
+
+	vxcp->vxc_lockmode = 2;
+	pthread_mutex_unlock(&vg_thread_lock);
+	return 1;
+}
+
+void
+vg_exec_context_downgrade_lock(vg_exec_context_t *vxcp)
+{
+	pthread_mutex_lock(&vg_thread_lock);
+
+	assert(vxcp->vxc_lockmode == 2);
+	assert(!vxcp->vxc_stop);
+	if (!--vg_thread_excl) {
+		vxcp->vxc_lockmode = 1;
+		pthread_cond_broadcast(&vg_thread_rdcond);
+		pthread_mutex_unlock(&vg_thread_lock);
+		return;
+	}
+	pthread_cond_signal(&vg_thread_wrcond);
+	__vg_exec_context_yield(vxcp);
+	pthread_mutex_unlock(&vg_thread_lock);
+}
+
 int
 vg_exec_context_init(vg_context_t *vcp, vg_exec_context_t *vxcp)
 {
+	pthread_mutex_lock(&vg_thread_lock);
+
 	memset(vxcp, 0, sizeof(*vxcp));
 
 	vxcp->vxc_vc = vcp;
@@ -64,18 +161,62 @@ vg_exec_context_init(vg_context_t *vcp, vg_exec_context_t *vxcp)
 	vxcp->vxc_key = vg_exec_context_new_key();
 	assert(vxcp->vxc_key);
 	EC_KEY_precompute_mult(vxcp->vxc_key, vxcp->vxc_bnctx);
+
+	vxcp->vxc_lockmode = 0;
+	vxcp->vxc_stop = 0;
+
+	vxcp->vxc_next = vg_threads;
+	vg_threads = vxcp;
+	__vg_exec_context_yield(vxcp);
+	pthread_mutex_unlock(&vg_thread_lock);
 	return 1;
 }
 
 void
 vg_exec_context_del(vg_exec_context_t *vxcp)
 {
+	vg_exec_context_t *tp, **pprev;
+
+	if (vxcp->vxc_lockmode == 2)
+		vg_exec_context_downgrade_lock(vxcp);
+
+	pthread_mutex_lock(&vg_thread_lock);
+	assert(vxcp->vxc_lockmode == 1);
+	vxcp->vxc_lockmode = 0;
+
+	for (pprev = &vg_threads, tp = *pprev;
+	     (tp != vxcp) && (tp != NULL);
+	     pprev = &tp->vxc_next, tp = *pprev);
+
+	assert(tp == vxcp);
+	*pprev = tp->vxc_next;
+
+	if (tp->vxc_stop)
+		pthread_cond_signal(&vg_thread_upcond);
+
 	BN_clear_free(&vxcp->vxc_bntarg);
 	BN_clear_free(&vxcp->vxc_bnbase);
 	BN_clear_free(&vxcp->vxc_bntmp);
 	BN_clear_free(&vxcp->vxc_bntmp2);
 	BN_CTX_free(vxcp->vxc_bnctx);
 	vxcp->vxc_bnctx = NULL;
+	pthread_mutex_unlock(&vg_thread_lock);
+}
+
+void
+vg_exec_context_yield(vg_exec_context_t *vxcp)
+{
+	if (vxcp->vxc_lockmode == 2)
+		vg_exec_context_downgrade_lock(vxcp);
+
+	else if (vxcp->vxc_stop) {
+		assert(vxcp->vxc_lockmode == 1);
+		pthread_mutex_lock(&vg_thread_lock);
+		__vg_exec_context_yield(vxcp);
+		pthread_mutex_unlock(&vg_thread_lock);
+	}
+
+	assert(vxcp->vxc_lockmode == 1);
 }
 
 void
@@ -473,6 +614,7 @@ int
 vg_context_add_patterns(vg_context_t *vcp,
 			const char ** const patterns, int npatterns)
 {
+	vcp->vc_pattern_generation++;
 	return vcp->vc_add_patterns(vcp, patterns, npatterns);
 }
 
@@ -480,6 +622,7 @@ void
 vg_context_clear_all_patterns(vg_context_t *vcp)
 {
 	vcp->vc_clear_all_patterns(vcp);
+	vcp->vc_pattern_generation++;
 }
 
 int
@@ -1690,7 +1833,7 @@ vg_prefix_test(vg_exec_context_t *vxcp)
 research:
 	vp = vg_prefix_avl_search(&vcpp->vcp_avlroot, &vxcp->vxc_bntarg);
 	if (vp) {
-		if (vg_exec_upgrade_lock(vxcp))
+		if (vg_exec_context_upgrade_lock(vxcp))
 			goto research;
 
 		vg_exec_context_consolidate_key(vxcp);
@@ -1717,6 +1860,7 @@ research:
 					vcpp, &vxcp->vxc_bntmp,
 					&vxcp->vxc_bntmp2,
 					vxcp->vxc_bnctx);
+			vcpp->base.vc_pattern_generation++;
 		}
 		res = 1;
 	}
@@ -1983,7 +2127,7 @@ restart_loop:
 
 		re = vcrp->vcr_regex[i];
 
-		if (vg_exec_upgrade_lock(vxcp) &&
+		if (vg_exec_context_upgrade_lock(vxcp) &&
 		    ((i >= vcrp->base.vc_npatterns) ||
 		     (vcrp->vcr_regex[i] != re)))
 			goto restart_loop;
@@ -2008,6 +2152,7 @@ restart_loop:
 				vcrp->vcr_regex_extra[nres];
 			vcrp->vcr_regex_pat[i] = vcrp->vcr_regex_pat[nres];
 			vcrp->base.vc_npatterns = nres;
+			vcrp->base.vc_pattern_generation++;
 		}
 		res = 1;
 	}
