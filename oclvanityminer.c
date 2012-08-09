@@ -589,6 +589,7 @@ server_context_getwork(server_context_t *ctxp)
 	    curl_easy_setopt(creq, CURLOPT_VERBOSE, ctxp->verbose > 1) ||
 	    curl_easy_setopt(creq, CURLOPT_WRITEFUNCTION,
 			     server_body_reader) ||
+	    curl_easy_setopt(creq, CURLOPT_FOLLOWLOCATION, 1) ||
 	    curl_easy_setopt(creq, CURLOPT_WRITEDATA, reqp)) {
 		fprintf(stderr, "Failed to set up libcurl\n");
 		exit(1);
@@ -634,6 +635,7 @@ server_context_submit_solution(server_context_t *ctxp,
 	creq = curl_easy_init();
 	if (curl_easy_setopt(creq, CURLOPT_URL, urlbuf) ||
 	    curl_easy_setopt(creq, CURLOPT_VERBOSE, ctxp->verbose > 1) ||
+	    curl_easy_setopt(creq, CURLOPT_FOLLOWLOCATION, 1) ||
 	    curl_easy_setopt(creq, CURLOPT_POST, 1)) {
 		fprintf(stderr, "Failed to set up libcurl\n");
 		exit(1);
