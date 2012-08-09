@@ -32,13 +32,20 @@
 #include "oclengine.h"
 #include "pattern.h"
 #include "util.h"
+#include "avl.h"
 
 
 const char *version = VANITYGEN_VERSION;
 const int debug = 0;
 
 
+/*
+ * Bounty work item, which includes a pattern and a public key
+ * Indexed in an AVL tree by pattern
+ */
+
 typedef struct workitem_s {
+	avl_item_t avlent;
 	const char *pattern;
 	const char *comment;
 	EC_POINT *pubkey;
@@ -47,6 +54,205 @@ typedef struct workitem_s {
 	double reward;
 	double value;
 } workitem_t;
+
+
+static int
+workitem_cmp(workitem_t *a, workitem_t *b)
+{
+	int cmpres;
+	cmpres = strcmp(a->pattern, b->pattern);
+	if (!cmpres)
+		cmpres = (a->reward < b->reward) ? -1 :
+			((a->reward > b->reward) ? 1 : 0);
+	return cmpres;
+}
+
+static workitem_t *
+workitem_avl_search(avl_root_t *rootp, const char *pattern)
+{
+	workitem_t *vp;
+	avl_item_t *itemp = rootp->ar_root;
+
+	while (itemp) {
+		int cmpres;
+		vp = avl_item_entry(itemp, workitem_t, avlent);
+		cmpres = strcmp(vp->pattern, pattern);
+		if (cmpres > 0) {
+			itemp = itemp->ai_left;
+		} else {
+			if (cmpres < 0) {
+				itemp = itemp->ai_right;
+			} else
+				return vp;
+		}
+	}
+	return NULL;
+}
+
+static workitem_t *
+workitem_avl_insert(avl_root_t *rootp, workitem_t *vpnew)
+{
+	workitem_t *vp;
+	avl_item_t *itemp = NULL;
+	avl_item_t **ptrp = &rootp->ar_root;
+	while (*ptrp) {
+		int cmpres;
+		itemp = *ptrp;
+		vp = avl_item_entry(itemp, workitem_t, avlent);
+		cmpres = workitem_cmp(vpnew, vp);
+		if (cmpres > 0) {
+			ptrp = &itemp->ai_left;
+		} else {
+			if (cmpres < 0) {
+				ptrp = &itemp->ai_right;
+			} else
+				return vp;
+		}
+	}
+	vpnew->avlent.ai_up = itemp;
+	itemp = &vpnew->avlent;
+	*ptrp = itemp;
+	avl_insert_fix(rootp, itemp);
+	return NULL;
+}
+
+static workitem_t *
+workitem_avl_first(avl_root_t *rootp)
+{
+	avl_item_t *itemp;
+	itemp = avl_first(rootp);
+	if (itemp)
+		return avl_item_entry(itemp, workitem_t, avlent);
+	return NULL;
+}
+
+static workitem_t *
+workitem_avl_next(workitem_t *vp)
+{
+	avl_item_t *itemp = &vp->avlent;
+	itemp = avl_next(itemp);
+	if (itemp)
+		return avl_item_entry(itemp, workitem_t, avlent);
+	return NULL;
+}
+
+void
+server_workitem_free(workitem_t *wip)
+{
+	if (wip->pubkey)
+		EC_POINT_free(wip->pubkey);
+	free(wip);
+}
+
+
+/*
+ * pubkeybatch, which includes a set of pattern bounties with the same
+ * base public key.  Patterns may be searched for concurrently due to
+ * having the same base public key.
+ *
+ * Indexed in an AVL tree by public key.
+ */
+
+typedef struct pubkeybatch_s {
+	avl_item_t avlent;
+	EC_POINT *pubkey;
+	avl_root_t items;
+	int nitems;
+	double total_value;
+} pubkeybatch_t;
+
+void
+server_batch_free(pubkeybatch_t *pbatch)
+{
+	workitem_t *wip;
+	while ((wip = workitem_avl_first(&pbatch->items)) != NULL) {
+		if (wip->pubkey == pbatch->pubkey)
+			wip->pubkey = NULL;
+		avl_remove(&pbatch->items, &wip->avlent);
+		server_workitem_free(wip);
+	}
+	if (pbatch->pubkey)
+		EC_POINT_free(pbatch->pubkey);
+	free(pbatch);
+}
+
+static int
+pubkeybatch_cmp(pubkeybatch_t *a, pubkeybatch_t *b, const EC_GROUP *pgroup)
+{
+	return EC_POINT_cmp(pgroup, a->pubkey, b->pubkey, NULL);
+}
+
+static pubkeybatch_t *
+pubkeybatch_avl_search(avl_root_t *rootp, const EC_POINT *pubkey,
+		       const EC_GROUP *pgroup)
+{
+	pubkeybatch_t *vp;
+	avl_item_t *itemp = rootp->ar_root;
+
+	while (itemp) {
+		int cmpres;
+		vp = avl_item_entry(itemp, pubkeybatch_t, avlent);
+		cmpres = EC_POINT_cmp(pgroup, vp->pubkey, pubkey, NULL);
+		if (cmpres > 0) {
+			itemp = itemp->ai_left;
+		} else {
+			if (cmpres < 0) {
+				itemp = itemp->ai_right;
+			} else
+				return vp;
+		}
+	}
+	return NULL;
+}
+
+static pubkeybatch_t *
+pubkeybatch_avl_insert(avl_root_t *rootp, pubkeybatch_t *vpnew,
+		       const EC_GROUP *pgroup)
+{
+	pubkeybatch_t *vp;
+	avl_item_t *itemp = NULL;
+	avl_item_t **ptrp = &rootp->ar_root;
+	while (*ptrp) {
+		int cmpres;
+		itemp = *ptrp;
+		vp = avl_item_entry(itemp, pubkeybatch_t, avlent);
+		cmpres = pubkeybatch_cmp(vpnew, vp, pgroup);
+		if (cmpres > 0) {
+			ptrp = &itemp->ai_left;
+		} else {
+			if (cmpres < 0) {
+				ptrp = &itemp->ai_right;
+			} else
+				return vp;
+		}
+	}
+	vpnew->avlent.ai_up = itemp;
+	itemp = &vpnew->avlent;
+	*ptrp = itemp;
+	avl_insert_fix(rootp, itemp);
+	return NULL;
+}
+
+static pubkeybatch_t *
+pubkeybatch_avl_first(avl_root_t *rootp)
+{
+	avl_item_t *itemp;
+	itemp = avl_first(rootp);
+	if (itemp)
+		return avl_item_entry(itemp, pubkeybatch_t, avlent);
+	return NULL;
+}
+
+static pubkeybatch_t *
+pubkeybatch_avl_next(pubkeybatch_t *vp)
+{
+	avl_item_t *itemp = &vp->avlent;
+	itemp = avl_next(itemp);
+	if (itemp)
+		return avl_item_entry(itemp, pubkeybatch_t, avlent);
+	return NULL;
+}
+
 
 typedef struct server_request_s {
 	int request_status;
@@ -57,18 +263,10 @@ typedef struct server_request_s {
 	size_t part_end;
 	size_t part_size;
 
-	workitem_t **items;
+	avl_root_t items;
 	int nitems;
-	int nalloc;
 } server_request_t;
 
-void
-server_workitem_free(workitem_t *wip)
-{
-	if (wip->pubkey)
-		EC_POINT_free(wip->pubkey);
-	free(wip);
-}
 
 static workitem_t *
 server_workitem_new(server_request_t *reqp,
@@ -103,6 +301,7 @@ server_workitem_new(server_request_t *reqp,
 				    strlen(pfx) +
 				    strlen(comment) + 2);
 	memset(wip, 0, sizeof(*wip));
+	avl_item_init(&wip->avlent);
 	wip->pattern = (char *) (wip + 1);
 	strcpy((char *)wip->pattern, pfx);
 	wip->comment = wip->pattern + (strlen(wip->pattern) + 1);
@@ -116,13 +315,6 @@ server_workitem_new(server_request_t *reqp,
 	return wip;
 }
 
-static int
-server_workitem_ptr_comp(const void *pa, const void *pb)
-{
-	workitem_t *a = *(workitem_t **) pa, *b = *(workitem_t **) pb;
-	return (a->value > b->value) ? -1 : ((a->value < b->value) ? 1 : 0);
-}
-
 
 typedef struct server_context_s {
 	EC_KEY *dummy_key;
@@ -131,19 +323,38 @@ typedef struct server_context_s {
 	char *getwork;
 	char *submit;
 	int verbose;
+	avl_root_t items;
+	int nitems;
 } server_context_t;
 
+
 static int
-server_workitem_equal(server_context_t *ctxp, workitem_t *a, workitem_t *b)
+server_workitem_equal(workitem_t *a, workitem_t *b)
 {
-	if (strcmp(a->pattern, b->pattern))
+	return (a->reward == b->reward) && !strcmp(a->pattern, b->pattern);
+}
+
+static int
+server_pubkeybatch_equal(server_context_t *ctxp,
+			 pubkeybatch_t *a, pubkeybatch_t *b)
+{
+	workitem_t *wipa, *wipb;
+
+	if (a->nitems != b->nitems)
 		return 0;
 	if (EC_POINT_cmp(EC_KEY_get0_group(ctxp->dummy_key),
 			 a->pubkey, b->pubkey, NULL))
 		return 0;
+
+	for (wipa = workitem_avl_first(&a->items),
+		     wipb = workitem_avl_first(&b->items);
+	     wipa && wipb;
+	     wipa = workitem_avl_next(wipa), wipb = workitem_avl_next(wipb)) {
+		if (!server_workitem_equal(wipa, wipb))
+			return 0;
+	}
 	return 1;
 }
-
 
 void
 server_context_free(server_context_t *ctxp)
@@ -166,6 +377,7 @@ server_context_new(const char *url, const char *credit_addr)
 	ctxp = (server_context_t *)
 		malloc(sizeof(*ctxp) + urllen + addrlen + 2);
 	memset(ctxp, 0, sizeof(*ctxp));
+	avl_root_init(&ctxp->items);
 	ctxp->url = (const char *) (ctxp + 1);
 	ctxp->credit_addr = (const char *) (ctxp->url + urllen + 1);
 	strcpy((char *) ctxp->url, url);
@@ -189,21 +401,34 @@ server_context_new(const char *url, const char *credit_addr)
 int
 server_workitem_add(server_request_t *reqp, workitem_t *wip)
 {
-	int nalloc;
+	workitem_t *xwip;
+	pubkeybatch_t *pbatch = NULL;
 
-	if ((reqp->nitems + 1) >= reqp->nalloc) {
-		nalloc = reqp->nalloc * 2;
-		if (nalloc == 0)
-			nalloc = 16;
-		if (nalloc > 65536)
+	pbatch = pubkeybatch_avl_search(&reqp->items, wip->pubkey, reqp->group);
+	if (pbatch == NULL) {
+		pbatch = (pubkeybatch_t *) malloc(sizeof(*pbatch));
+		if (pbatch == NULL)
 			return -1;
-		reqp->items = (workitem_t **)
-			realloc(reqp->items, nalloc * sizeof(*reqp->items));
-		if (reqp->items == NULL)
-			return -1;
-		reqp->nalloc = nalloc;
+		memset(pbatch, 0, sizeof(*pbatch));
+		avl_item_init(&pbatch->avlent);
+		avl_root_init(&pbatch->items);
+		pbatch->total_value = 0;
+		pbatch->pubkey = wip->pubkey;
+		pubkeybatch_avl_insert(&reqp->items, pbatch, reqp->group);
+		reqp->nitems++;
 	}
-	reqp->items[reqp->nitems++] = wip;
+
+	/* Make sure there isn't an overlap */
+	xwip = workitem_avl_insert(&pbatch->items, wip);
+	if (xwip)
+		return -1;
+
+	if (wip->pubkey && wip->pubkey != pbatch->pubkey)
+		EC_POINT_free(wip->pubkey);
+	wip->pubkey = pbatch->pubkey;
+	
+	pbatch->nitems++;
+	pbatch->total_value += wip->value;
 	return 0;
 }
 
@@ -302,30 +527,38 @@ server_body_reader(const char *buf, size_t elemsize, size_t len, void *param)
 }
 
 void
-dump_work(workitem_t **workarray)
+dump_work(avl_root_t *work)
 {
+	pubkeybatch_t *pbatch;
 	workitem_t *wip;
-	int i;
 	printf("Available bounties:\n");
-	for (i = 0; workarray[i] != NULL; i++) {
-		wip = workarray[i];
-		printf("Pattern: \"%s\" Reward: %f Value: %f BTC/MkeyHr\n",
-		       wip->pattern,
-		       wip->reward,
-		       wip->value);
+	for (pbatch = pubkeybatch_avl_first(work);
+	     pbatch != NULL;
+	     pbatch = pubkeybatch_avl_next(pbatch)) {
+
+		for (wip = workitem_avl_first(&pbatch->items);
+		     wip != NULL;
+		     wip = workitem_avl_next(wip)) {
+			printf("Pattern: \"%s\" Reward: %f "
+			       "Value: %f BTC/MkeyHr\n",
+			       wip->pattern,
+			       wip->reward,
+			       wip->value);
+		}
+		if (pbatch->nitems > 1)
+			printf("Batch of %d, total value: %f BTC/MkeyHr\n",
+			       pbatch->nitems, pbatch->total_value);
 	}
 }
 
 void
-free_work_array(workitem_t **workarray, workitem_t *except)
+free_pkb_tree(avl_root_t *rootp, pubkeybatch_t *save_pkb)
 {
-	int i;
-	if (workarray) {
-		for (i = 0; workarray[i] != NULL; i++) {
-			if (workarray[i] != except)
-				server_workitem_free(workarray[i]);
-		}
-		free(workarray);
+	pubkeybatch_t *pkb;
+	while ((pkb = pubkeybatch_avl_first(rootp)) != NULL) {
+		avl_remove(rootp, &pkb->avlent);
+		if (pkb != save_pkb)
+			server_batch_free(pkb);
 	}
 }
 
@@ -334,19 +567,17 @@ server_request_free(server_request_t *reqp)
 {
 	if (reqp->part_buf != NULL)
 		free(reqp->part_buf);
-	if (reqp->items)
-		free_work_array(reqp->items, NULL);
+	if (!avl_root_empty(&reqp->items))
+		free_pkb_tree(&reqp->items, NULL);
 	free(reqp);
 }
 
 int
-server_context_getwork(server_context_t *ctxp, workitem_t ***arrayret)
+server_context_getwork(server_context_t *ctxp)
 {
 	CURLcode res;
 	server_request_t *reqp;
 	CURL *creq;
-
-	*arrayret = NULL;
 
 	reqp = (server_request_t *) malloc(sizeof(*reqp));
 	memset(reqp, 0, sizeof(*reqp));
@@ -373,13 +604,7 @@ server_context_getwork(server_context_t *ctxp, workitem_t ***arrayret)
 		return -1;
 	}
 
-	if (reqp->items) {
-		reqp->items[reqp->nitems] = NULL;
-		qsort(reqp->items, reqp->nitems, sizeof(*(reqp->items)),
-		      server_workitem_ptr_comp);
-		*arrayret = reqp->items;
-	}
-
+	ctxp->items.ar_root = reqp->items.ar_root;
 	return 0;
 }
 
@@ -462,17 +687,38 @@ output_match_work_complete(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 }
 
 int
-check_solution(server_context_t *scp, workitem_t *wip)
+check_solution(server_context_t *scp, pubkeybatch_t *pbatch)
 {
 	int res = 0;
 	pthread_mutex_lock(&soln_lock);
 	if (soln_private_key != NULL) {
-		assert(!strcmp(soln_pattern, wip->pattern));
+		workitem_t *wip = workitem_avl_search(&pbatch->items,
+						      soln_pattern);
+		assert(wip != NULL);
+		avl_remove(&pbatch->items, &wip->avlent);
+		pbatch->nitems--;
+		pbatch->total_value -= wip->value;
 		server_context_submit_solution(scp, wip, soln_private_key);
+		if (wip->pubkey == pbatch->pubkey)
+			wip->pubkey = NULL;
+		server_workitem_free(wip);
 		free_soln();
 		res = 1;
 	}
 	pthread_mutex_unlock(&soln_lock);
+	return res;
+}
+
+pubkeybatch_t *
+most_valuable_pkb(server_context_t *scp)
+{
+	pubkeybatch_t *pbatch, *res = NULL;
+	for (pbatch = pubkeybatch_avl_first(&scp->items);
+	     pbatch != NULL;
+	     pbatch = pubkeybatch_avl_next(pbatch)) {
+		if (!res || (res->total_value < pbatch->total_value))
+			res = pbatch;
+	}
 	return res;
 }
 
@@ -528,11 +774,10 @@ main(int argc, char **argv)
 	int res;
 	int thread_started = 0;
 	pthread_t thread;
-	workitem_t *active_wip = NULL;
+	pubkeybatch_t *active_pkb = NULL;
 
 	server_context_t *scp = NULL;
-	workitem_t *wip = NULL, **wipa;
-	int wip_index = 0;
+	pubkeybatch_t *pkb;
 	int was_sleeping = 0;
 
 	struct timeval tv;
@@ -663,64 +908,65 @@ main(int argc, char **argv)
 
 	scp = server_context_new(url, credit_addr);
 	scp->verbose = verbose;
-	wipa = NULL;
 
 	/* Get the initial bounty list, abort on failure */
-	if (server_context_getwork(scp, &wipa))
+	if (server_context_getwork(scp))
 		return 1;
 
 	while (1) {
-		if (!wipa || !wipa[wip_index]) {
-			server_context_getwork(scp, &wipa);
-			wip_index = 0;
-		}
+		if (avl_root_empty(&scp->items))
+			server_context_getwork(scp);
 
-		if (wipa) {
-			wip = wipa[wip_index];
-			if (wip)
-				wip_index += 1;
-		} else
-			wip = NULL;
+		pkb = most_valuable_pkb(scp);
 
 		/* If the work item is the same as the one we're executing,
 		   keep it */
-		if (wip && active_wip &&
-		    server_workitem_equal(scp, active_wip, wip))
-			wip = active_wip;
+		if (pkb && active_pkb &&
+		    server_pubkeybatch_equal(scp, active_pkb, pkb))
+			pkb = active_pkb;
 
-		if (thread_started && (!active_wip || (wip != active_wip))) {
+		if (thread_started && (!active_pkb || (pkb != active_pkb))) {
 			/* If a thread is running, stop it */
 			vcp->vc_halt = 1;
 			pthread_join(thread, NULL);
 			thread_started = 0;
 			vcp->vc_halt = 0;
-			if (active_wip) {
-				check_solution(scp, active_wip);
-				active_wip = NULL;
+			if (active_pkb) {
+				check_solution(scp, active_pkb);
+				active_pkb = NULL;
 			}
 			vg_context_clear_all_patterns(vcp);
 		}
 
-		if (!wip) {
+		if (!pkb) {
 			if (!was_sleeping) {
 				fprintf(stderr,
 					"No work available, sleeping\n");
 				was_sleeping = 1;
 			}
 
-		} else if (!active_wip) {
+		} else if (!active_pkb) {
+			workitem_t *wip;
 			was_sleeping = 0;
-			fprintf(stderr,
-				"Searching for pattern: \"%s\" "
-				"Reward: %f Value: %f BTC/MkeyHr\n",
-				wip->pattern,
-				wip->reward,
-				wip->value);
-			vcp->vc_addrtype = wip->addrtype;
-			vcp->vc_pubkey_base = wip->pubkey;
-			if (!vg_context_add_patterns(vcp, &wip->pattern, 1))
-				return 1;
-			assert(vcp->vc_npatterns);
+			vcp->vc_pubkey_base = pkb->pubkey;
+			for (wip = workitem_avl_first(&pkb->items);
+			     wip != NULL;
+			     wip = workitem_avl_next(wip)) {
+				fprintf(stderr,
+					"Searching for pattern: \"%s\" "
+					"Reward: %f Value: %f BTC/MkeyHr\n",
+					wip->pattern,
+					wip->reward,
+					wip->value);
+				vcp->vc_addrtype = wip->addrtype;
+				if (!vg_context_add_patterns(vcp,
+							     &wip->pattern,
+							     1)) {
+					fprintf(stderr,
+					   "WARNING: could not add pattern\n");
+				}
+				assert(vcp->vc_npatterns);
+			}
 
 			if (!vocp) {
 				vocp = vg_ocl_context_new(vcp,
@@ -735,7 +981,7 @@ main(int argc, char **argv)
 			res = pthread_create(&thread, NULL,
 					     vg_opencl_loop, vocp);
 			thread_started = 1;
-			active_wip = wip;
+			active_pkb = pkb;
 		}
 
 		/* Wait for something to happen */
@@ -752,14 +998,11 @@ main(int argc, char **argv)
 		pthread_mutex_unlock(&soln_lock);
 
 		if (res == 0) {
-			if (check_solution(scp, active_wip))
-				active_wip = NULL;
+			if (check_solution(scp, active_pkb))
+				active_pkb = NULL;
 		}
 		else if (res == ETIMEDOUT) {
-			if (wipa) {
-				free_work_array(wipa, active_wip);
-				wipa = NULL;
-			}
+			free_pkb_tree(&scp->items, active_pkb);
 		}
 	}
 
