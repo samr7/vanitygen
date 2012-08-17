@@ -54,16 +54,14 @@ static pthread_mutex_t vg_thread_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t vg_thread_rdcond = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t vg_thread_wrcond = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t vg_thread_upcond = PTHREAD_COND_INITIALIZER;
-static vg_exec_context_t *vg_threads = NULL;
-static int vg_thread_excl = 0;
 
 static void
 __vg_exec_context_yield(vg_exec_context_t *vxcp)
 {
 	vxcp->vxc_lockmode = 0;
-	while (vg_thread_excl) {
+	while (vxcp->vxc_vc->vc_thread_excl) {
 		if (vxcp->vxc_stop) {
-			assert(vg_thread_excl);
+			assert(vxcp->vxc_vc->vc_thread_excl);
 			vxcp->vxc_stop = 0;
 			pthread_cond_signal(&vg_thread_upcond);
 		}
@@ -78,6 +76,7 @@ int
 vg_exec_context_upgrade_lock(vg_exec_context_t *vxcp)
 {
 	vg_exec_context_t *tp;
+	vg_context_t *vcp;
 
 	if (vxcp->vxc_lockmode == 2)
 		return 0;
@@ -86,20 +85,21 @@ vg_exec_context_upgrade_lock(vg_exec_context_t *vxcp)
 
 	assert(vxcp->vxc_lockmode == 1);
 	vxcp->vxc_lockmode = 0;
+	vcp = vxcp->vxc_vc;
 
-	if (vg_thread_excl++) {
+	if (vcp->vc_thread_excl++) {
 		assert(vxcp->vxc_stop);
 		vxcp->vxc_stop = 0;
 		pthread_cond_signal(&vg_thread_upcond);
 		pthread_cond_wait(&vg_thread_wrcond, &vg_thread_lock);
 
-		for (tp = vg_threads; tp != NULL; tp = tp->vxc_next) {
+		for (tp = vcp->vc_threads; tp != NULL; tp = tp->vxc_next) {
 			assert(!tp->vxc_lockmode);
 			assert(!tp->vxc_stop);
 		}
 
 	} else {
-		for (tp = vg_threads; tp != NULL; tp = tp->vxc_next) {
+		for (tp = vcp->vc_threads; tp != NULL; tp = tp->vxc_next) {
 			if (tp->vxc_lockmode) {
 				assert(tp->vxc_lockmode != 2);
 				tp->vxc_stop = 1;
@@ -107,7 +107,9 @@ vg_exec_context_upgrade_lock(vg_exec_context_t *vxcp)
 		}
 
 		do {
-			for (tp = vg_threads; tp != NULL; tp = tp->vxc_next) {
+			for (tp = vcp->vc_threads;
+			     tp != NULL;
+			     tp = tp->vxc_next) {
 				if (tp->vxc_lockmode) {
 					assert(tp->vxc_lockmode != 2);
 					pthread_cond_wait(&vg_thread_upcond,
@@ -127,10 +129,9 @@ void
 vg_exec_context_downgrade_lock(vg_exec_context_t *vxcp)
 {
 	pthread_mutex_lock(&vg_thread_lock);
-
 	assert(vxcp->vxc_lockmode == 2);
 	assert(!vxcp->vxc_stop);
-	if (!--vg_thread_excl) {
+	if (!--vxcp->vxc_vc->vc_thread_excl) {
 		vxcp->vxc_lockmode = 1;
 		pthread_cond_broadcast(&vg_thread_rdcond);
 		pthread_mutex_unlock(&vg_thread_lock);
@@ -166,8 +167,8 @@ vg_exec_context_init(vg_context_t *vcp, vg_exec_context_t *vxcp)
 	vxcp->vxc_lockmode = 0;
 	vxcp->vxc_stop = 0;
 
-	vxcp->vxc_next = vg_threads;
-	vg_threads = vxcp;
+	vxcp->vxc_next = vcp->vc_threads;
+	vcp->vc_threads = vxcp;
 	__vg_exec_context_yield(vxcp);
 	pthread_mutex_unlock(&vg_thread_lock);
 	return 1;
@@ -185,7 +186,7 @@ vg_exec_context_del(vg_exec_context_t *vxcp)
 	assert(vxcp->vxc_lockmode == 1);
 	vxcp->vxc_lockmode = 0;
 
-	for (pprev = &vg_threads, tp = *pprev;
+	for (pprev = &vxcp->vxc_vc->vc_threads, tp = *pprev;
 	     (tp != vxcp) && (tp != NULL);
 	     pprev = &tp->vxc_next, tp = *pprev);
 
@@ -632,6 +633,49 @@ vg_context_hash160_sort(vg_context_t *vcp, void *buf)
 	if (!vcp->vc_hash160_sort)
 		return 0;
 	return vcp->vc_hash160_sort(vcp, buf);
+}
+
+int
+vg_context_start_threads(vg_context_t *vcp)
+{
+	vg_exec_context_t *vxcp;
+	int res;
+
+	for (vxcp = vcp->vc_threads; vxcp != NULL; vxcp = vxcp->vxc_next) {
+		res = pthread_create((pthread_t *) &vxcp->vxc_pthread,
+				     NULL,
+				     (void *(*)(void *)) vxcp->vxc_threadfunc,
+				     vxcp);
+		if (res) {
+			fprintf(stderr, "ERROR: could not create thread: %d\n",
+				res);
+			vg_context_stop_threads(vcp);
+			return -1;
+		}
+		vxcp->vxc_thread_active = 1;
+	}
+	return 0;
+}
+
+void
+vg_context_stop_threads(vg_context_t *vcp)
+{
+	vcp->vc_halt = 1;
+	vg_context_wait_for_completion(vcp);
+	vcp->vc_halt = 0;
+}
+
+void
+vg_context_wait_for_completion(vg_context_t *vcp)
+{
+	vg_exec_context_t *vxcp;
+
+	for (vxcp = vcp->vc_threads; vxcp != NULL; vxcp = vxcp->vxc_next) {
+		if (!vxcp->vxc_thread_active)
+			continue;
+		pthread_join((pthread_t) vxcp->vxc_pthread, NULL);
+		vxcp->vxc_thread_active = 0;
+	}
 }
 
 

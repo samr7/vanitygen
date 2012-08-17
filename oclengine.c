@@ -50,6 +50,7 @@
 #define round_up_pow2(x, a) (((x) + ((a)-1)) & ~((a)-1))
 
 static void vg_ocl_free_args(vg_ocl_context_t *vocp);
+static void *vg_opencl_loop(vg_exec_context_t *arg);
 
 
 /* OpenCL address searching mode */
@@ -872,6 +873,7 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did,
 
 	memset(vocp, 0, sizeof(*vocp));
 	vg_exec_context_init(vcp, &vocp->base);
+	vocp->base.vxc_threadfunc = vg_opencl_loop;
 
 	pthread_mutex_init(&vocp->voc_lock, NULL);
 	pthread_cond_init(&vocp->voc_wait, NULL);
@@ -1872,8 +1874,8 @@ out:
  * Address search thread main loop
  */
 
-void *
-vg_opencl_loop(void *arg)
+static void *
+vg_opencl_loop(vg_exec_context_t *arg)
 {
 	vg_ocl_context_t *vocp = (vg_ocl_context_t *) arg;
 	int i;
@@ -2397,7 +2399,7 @@ get_platform(int num)
 }
 
 void
-enumerate_opencl(void)
+vg_ocl_enumerate_devices(void)
 {
 	cl_platform_id *pids;
 	cl_device_id *dids;
@@ -2420,7 +2422,7 @@ enumerate_opencl(void)
 	}
 }
 
-cl_device_id
+static cl_device_id
 get_opencl_device(int platformidx, int deviceidx)
 {
 	cl_platform_id pid;
@@ -2432,7 +2434,6 @@ get_opencl_device(int platformidx, int deviceidx)
 		if (did)
 			return did;
 	}
-	enumerate_opencl();
 	return NULL;
 }
 
@@ -2602,6 +2603,96 @@ out_fail:
 	vg_ocl_context_free(vocp);
 	return NULL;
 }
+
+vg_ocl_context_t *
+vg_ocl_context_new_from_devstr(vg_context_t *vcp, const char *devstr,
+			       int safemode, int verify)
+{
+	int platformidx, deviceidx;
+	int worksize = 0, nthreads = 0, nrows = 0, ncols = 0, invsize = 0;
+
+	char *dsd, *part, *part2, *save, *param;
+
+	dsd = strdup(devstr);
+	if (!dsd)
+		return NULL;
+
+	save = NULL;
+	part = strtok_r(dsd, ",", &save);
+
+	part2 = strchr(part, ':');
+	if (!part2) {
+		fprintf(stderr, "Invalid device specifier '%s'\n", part);
+		free(dsd);
+		return NULL;
+	}
+
+	*part2 = '\0';
+	platformidx = atoi(part);
+	deviceidx = atoi(part2 + 1);
+
+	while ((part = strtok_r(NULL, ",", &save)) != NULL) {
+		param = strchr(part, '=');
+		if (!param) {
+			fprintf(stderr, "Unrecognized parameter '%s'\n", part);
+			continue;
+		}
+
+		*param = '\0';
+		param++;
+
+		if (!strcmp(part, "grid")) {
+			ncols = strtol(param, &part2, 0);
+			if (part2 && *part2 == 'x') {
+				nrows = strtol(part2+1, NULL, 0);
+			}
+			if (!nrows || !ncols) {
+				fprintf(stderr,
+					"Invalid grid size '%s'\n", param);
+				nrows = 0;
+				ncols = 0;
+				continue;
+			}
+		}
+
+		else if (!strcmp(part, "invsize")) {
+			invsize = atoi(param);
+			if (!invsize) {
+				fprintf(stderr,
+					"Invalid modular inverse size '%s'\n",
+					param);
+				continue;
+			}
+			if (invsize & (invsize - 1)) {
+				fprintf(stderr,
+					"Modular inverse size %d must be "
+					"a power of 2\n", invsize);
+				invsize = 0;
+				continue;
+			}
+		}
+
+		else if (!strcmp(part, "threads")) {
+			nthreads = atoi(param);
+			if (nthreads == 0) {
+				fprintf(stderr,
+					"Invalid thread count '%s'\n", optarg);
+				continue;
+			}
+		}
+
+		else {
+			fprintf(stderr, "Unrecognized parameter '%s'\n", part);
+		}
+	}
+
+	free(dsd);
+
+	return vg_ocl_context_new(vcp, platformidx, deviceidx, safemode,
+				  verify, worksize, nthreads, nrows, ncols,
+				  invsize);
+}
+
 
 void
 vg_ocl_context_free(vg_ocl_context_t *vocp)

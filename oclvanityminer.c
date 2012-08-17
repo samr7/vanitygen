@@ -735,6 +735,11 @@ usage(const char *name)
 "generate the address with the best difficulty to reward ratio.  Maintains\n"
 "contact with the bounty pool server and periodically refreshes the bounty\n"
 "list.\n"
+"By default, if no device is specified, and the system has exactly one OpenCL\n"
+"device, it will be selected automatically, otherwise if the system has\n"
+"multiple OpenCL devices and no device is specified, an error will be\n"
+"reported.  To use multiple devices simultaneously, specify the -D option for\n"
+"each device.\n"
 "\n"
 "Options:\n"
 "-u <URL>      Bounty pool URL\n"
@@ -744,6 +749,9 @@ usage(const char *name)
 "-q            Quiet output\n"
 "-p <platform> Select OpenCL platform\n"
 "-d <device>   Select OpenCL device\n"
+"-D <devstr>   Use OpenCL device, identified by device string\n"
+"              Form: <platform>:<devicenumber>[,<options>]\n"
+"              Example: 0:0,grid=1024x1024\n"
 "-S            Safe mode, disable OpenCL loop unrolling optimizations\n"
 "-w <worksize> Set work items per thread in a work unit\n"
 "-t <threads>  Set target thread count per multiprocessor\n"
@@ -753,6 +761,7 @@ usage(const char *name)
 version, name);
 }
 
+#define MAX_DEVS 32
 
 int
 main(int argc, char **argv)
@@ -770,12 +779,15 @@ main(int argc, char **argv)
 	int invsize = 0;
 	int verify_mode = 0;
 	int safe_mode = 0;
+
+	char *devstrs[MAX_DEVS];
+	int ndevstrs = 0;
+
 	vg_context_t *vcp = NULL;
 	vg_ocl_context_t *vocp = NULL;
 
 	int res;
 	int thread_started = 0;
-	pthread_t thread;
 	pubkeybatch_t *active_pkb = NULL;
 
 	server_context_t *scp = NULL;
@@ -794,7 +806,7 @@ main(int argc, char **argv)
 	}
 
 	while ((opt = getopt(argc, argv,
-			     "u:a:vqp:d:w:t:g:b:VSh?i:")) != -1) {
+			     "u:a:vqp:d:w:t:g:b:VD:Sh?i:")) != -1) {
 		switch (opt) {
 		case 'u':
 			url = optarg;
@@ -871,6 +883,15 @@ main(int argc, char **argv)
 		case 'S':
 			safe_mode = 1;
 			break;
+		case 'D':
+			if (ndevstrs >= MAX_DEVS) {
+				fprintf(stderr,
+					"Too many OpenCL devices (limit %d)\n",
+					MAX_DEVS);
+				return 1;
+			}
+			devstrs[ndevstrs++] = optarg;
+			break;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -915,6 +936,34 @@ main(int argc, char **argv)
 	if (server_context_getwork(scp))
 		return 1;
 
+	/* Set up OpenCL */
+	res = 0;
+	if (ndevstrs) {
+		for (opt = 0; opt < ndevstrs; opt++) {
+			vocp = vg_ocl_context_new_from_devstr(vcp, devstrs[opt],
+							      safe_mode,
+							      verify_mode);
+			if (!vocp) {
+				fprintf(stderr,
+				"Could not open device '%s', ignoring\n",
+					devstrs[opt]);
+			} else {
+				res++;
+			}
+		}
+	} else {
+		vocp = vg_ocl_context_new(vcp, platformidx, deviceidx,
+					  safe_mode, verify_mode,
+					  worksize, nthreads,
+					  nrows, ncols, invsize);
+		if (vocp)
+			res++;
+	}
+	if (!res) {
+		vg_ocl_enumerate_devices();
+		return 1;
+	}
+
 	while (1) {
 		if (avl_root_empty(&scp->items))
 			server_context_getwork(scp);
@@ -929,10 +978,8 @@ main(int argc, char **argv)
 
 		if (thread_started && (!active_pkb || (pkb != active_pkb))) {
 			/* If a thread is running, stop it */
-			vcp->vc_halt = 1;
-			pthread_join(thread, NULL);
+			vg_context_stop_threads(vcp);
 			thread_started = 0;
-			vcp->vc_halt = 0;
 			if (active_pkb) {
 				check_solution(scp, active_pkb);
 				active_pkb = NULL;
@@ -970,18 +1017,9 @@ main(int argc, char **argv)
 				assert(vcp->vc_npatterns);
 			}
 
-			if (!vocp) {
-				vocp = vg_ocl_context_new(vcp,
-						  platformidx, deviceidx,
-						  safe_mode, verify_mode,
-						  worksize, nthreads, nrows,
-						  ncols, invsize);
-				if (!vocp)
-					return 1;
-			}
-
-			res = pthread_create(&thread, NULL,
-					     vg_opencl_loop, vocp);
+			res = vg_context_start_threads(vcp);
+			if (res)
+				return 1;
 			thread_started = 1;
 			active_pkb = pkb;
 		}

@@ -45,6 +45,11 @@ usage(const char *name)
 "location or imported into a bitcoin client to spend any balance received on\n"
 "the address.\n"
 "By default, <pattern> is interpreted as an exact prefix.\n"
+"By default, if no device is specified, and the system has exactly one OpenCL\n"
+"device, it will be selected automatically, otherwise if the system has\n"
+"multiple OpenCL devices and no device is specified, an error will be\n"
+"reported.  To use multiple devices simultaneously, specify the -D option for\n"
+"each device.\n"
 "\n"
 "Options:\n"
 "-v            Verbose output\n"
@@ -58,6 +63,9 @@ usage(const char *name)
 "-E <password> Encrypt private keys with <password> (UNSAFE)\n"
 "-p <platform> Select OpenCL platform\n"
 "-d <device>   Select OpenCL device\n"
+"-D <devstr>   Use OpenCL device, identified by device string\n"
+"              Form: <platform>:<devicenumber>[,<options>]\n"
+"              Example: 0:0,grid=1024x1024\n"
 "-S            Safe mode, disable OpenCL loop unrolling optimizations\n"
 "-w <worksize> Set work items per thread in a work unit\n"
 "-t <threads>  Set target thread count per multiprocessor\n"
@@ -70,6 +78,8 @@ usage(const char *name)
 "-s <file>     Seed random number generator from <file>\n",
 version, name);
 }
+
+#define MAX_DEVS 32
 
 int
 main(int argc, char **argv)
@@ -99,9 +109,12 @@ main(int argc, char **argv)
 	EC_POINT *pubkey_base = NULL;
 	const char *result_file = NULL;
 	const char *key_password = NULL;
+	char *devstrs[MAX_DEVS];
+	int ndevstrs = 0;
+	int opened = 0;
 
 	while ((opt = getopt(argc, argv,
-			     "vqikNTX:eE:p:P:d:w:t:g:b:VSh?f:o:s:")) != -1) {
+			     "vqikNTX:eE:p:P:d:w:t:g:b:VSh?f:o:s:D:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -187,6 +200,15 @@ main(int argc, char **argv)
 			break;
 		case 'S':
 			safe_mode = 1;
+			break;
+		case 'D':
+			if (ndevstrs >= MAX_DEVS) {
+				fprintf(stderr,
+					"Too many OpenCL devices (limit %d)\n",
+					MAX_DEVS);
+				return 1;
+			}
+			devstrs[ndevstrs++] = optarg;
 			break;
 		case 'P': {
 			if (pubkey_base != NULL) {
@@ -338,14 +360,38 @@ main(int argc, char **argv)
 		fprintf(stderr,
 			"Regular expressions: %ld\n", vcp->vc_npatterns);
 
-	vocp = vg_ocl_context_new(vcp, platformidx, deviceidx,
-				  safe_mode, verify_mode,
-				  worksize, nthreads, nrows, ncols, invsize);
-	if (!vocp) {
+	if (ndevstrs) {
+		for (opt = 0; opt < ndevstrs; opt++) {
+			vocp = vg_ocl_context_new_from_devstr(vcp, devstrs[opt],
+							      safe_mode,
+							      verify_mode);
+			if (!vocp) {
+				fprintf(stderr,
+				"Could not open device '%s', ignoring\n",
+					devstrs[opt]);
+			} else {
+				opened++;
+			}
+		}
+	} else {
+		vocp = vg_ocl_context_new(vcp, platformidx, deviceidx,
+					  safe_mode, verify_mode,
+					  worksize, nthreads,
+					  nrows, ncols, invsize);
+		if (vocp)
+			opened++;
+	}
+
+	if (!opened) {
+		vg_ocl_enumerate_devices();
 		return 1;
 	}
 
-	vg_opencl_loop(vocp);
+	opt = vg_context_start_threads(vcp);
+	if (opt)
+		return 1;
+
+	vg_context_wait_for_completion(vcp);
 	vg_ocl_context_free(vocp);
 	return 0;
 }
