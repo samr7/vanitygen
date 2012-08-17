@@ -1502,11 +1502,8 @@ vg_ocl_prefix_rekey(vg_ocl_context_t *vocp)
 	if (vocp->voc_pattern_rewrite) {
 		/* Count number of range records */
 		i = vg_context_hash160_sort(vcp, NULL);
-		if (!i) {
-			fprintf(stderr,
-				"No range records available, exiting\n");
+		if (!i)
 			return 0;
-		}
 
 		if (i > vocp->voc_pattern_alloc) {
 			/* (re)allocate target buffer */
@@ -1989,9 +1986,16 @@ vg_opencl_loop(vg_exec_context_t *arg)
 	gettimeofday(&tvstart, NULL);
 
 l_rekey:
-	if (vocp->voc_rekey_func &&
-	    !vocp->voc_rekey_func(vocp))
-		goto enomem;
+	if (vocp->voc_rekey_func) {
+		switch (vocp->voc_rekey_func(vocp)) {
+		case 1:
+			break;
+		case 0:
+			goto nopatterns;
+		default:
+			goto enomem;
+		}
+	}
 
 	vg_exec_context_upgrade_lock(vxcp);
 
@@ -2171,6 +2175,8 @@ l_rekey:
 	if (0) {
 	enomem:
 		fprintf(stderr, "ERROR: allocation failure?\n");
+	nopatterns:
+		;
 	}
 
 	if (halt) {
