@@ -139,6 +139,8 @@ extern void vg_context_wait_for_completion(vg_context_t *vcp);
 /* Prefix context methods */
 extern vg_context_t *vg_prefix_context_new(int addrtype, int privtype,
 					   int caseinsensitive);
+extern void vg_prefix_context_set_case_insensitive(vg_context_t *vcp,
+						   int caseinsensitive);
 extern double vg_prefix_get_difficulty(int addrtype, const char *pattern);
 
 /* Regex context methods */

@@ -1210,6 +1210,12 @@ typedef struct _vg_prefix_context_s {
 	int			vcp_caseinsensitive;
 } vg_prefix_context_t;
 
+void
+vg_prefix_context_set_case_insensitive(vg_context_t *vcp, int caseinsensitive)
+{
+	((vg_prefix_context_t *) vcp)->vcp_caseinsensitive = caseinsensitive;
+}
+
 static void
 vg_prefix_context_clear_all_patterns(vg_context_t *vcp)
 {

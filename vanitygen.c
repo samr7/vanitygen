@@ -324,6 +324,8 @@ usage(const char *name)
 version, name);
 }
 
+#define MAX_FILE 4
+
 int
 main(int argc, char **argv)
 {
@@ -339,7 +341,6 @@ main(int argc, char **argv)
 	int prompt_password = 0;
 	int opt;
 	char *seedfile = NULL;
-	FILE *fp = NULL;
 	char pwbuf[128];
 	const char *result_file = NULL;
 	const char *key_password = NULL;
@@ -348,6 +349,13 @@ main(int argc, char **argv)
 	int nthreads = 0;
 	vg_context_t *vcp = NULL;
 	EC_POINT *pubkey_base = NULL;
+
+	FILE *pattfp[MAX_FILE], *fp;
+	int pattfpi[MAX_FILE];
+	int npattfp = 0;
+	int pattstdin = 0;
+
+	int i;
 
 	while ((opt = getopt(argc, argv, "vqrikeE:P:NTX:F:t:h?f:o:s:")) != -1) {
 		switch (opt) {
@@ -425,12 +433,17 @@ main(int argc, char **argv)
 			}
 			break;
 		case 'f':
-			if (fp) {
+			if (npattfp >= MAX_FILE) {
 				fprintf(stderr,
-					"Multiple files specified\n");
+					"Too many input files specified\n");
 				return 1;
 			}
 			if (!strcmp(optarg, "-")) {
+				if (pattstdin) {
+					fprintf(stderr, "ERROR: stdin "
+						"specified multiple times\n");
+					return 1;
+				}
 				fp = stdin;
 			} else {
 				fp = fopen(optarg, "r");
@@ -441,6 +454,9 @@ main(int argc, char **argv)
 					return 1;
 				}
 			}
+			pattfp[npattfp] = fp;
+			pattfpi[npattfp] = caseinsensitive;
+			npattfp++;
 			break;
 		case 'o':
 			if (result_file) {
@@ -510,23 +526,6 @@ main(int argc, char **argv)
 		}
 	}
 
-	if (fp) {
-		if (!vg_read_file(fp, &patterns, &npatterns)) {
-			fprintf(stderr, "Failed to load pattern file\n");
-			return 1;
-		}
-		if (fp != stdin)
-			fclose(fp);
-
-	} else {
-		if (optind >= argc) {
-			usage(argv[0]);
-			return 1;
-		}
-		patterns = &argv[optind];
-		npatterns = argc - optind;
-	}
-		
 	if (regex) {
 		vcp = vg_regex_context_new(addrtype, privtype);
 
@@ -545,9 +544,37 @@ main(int argc, char **argv)
 	vcp->vc_output_match = vg_output_match_console;
 	vcp->vc_output_timing = vg_output_timing_console;
 
-	if (!vg_context_add_patterns(vcp, (const char ** const) patterns,
-				     npatterns))
+	if (!npattfp) {
+		if (optind >= argc) {
+			usage(argv[0]);
+			return 1;
+		}
+		patterns = &argv[optind];
+		npatterns = argc - optind;
+
+		if (!vg_context_add_patterns(vcp,
+					     (const char ** const) patterns,
+					     npatterns))
 		return 1;
+	}
+
+	for (i = 0; i < npattfp; i++) {
+		fp = pattfp[i];
+		if (!vg_read_file(fp, &patterns, &npatterns)) {
+			fprintf(stderr, "Failed to load pattern file\n");
+			return 1;
+		}
+		if (fp != stdin)
+			fclose(fp);
+
+		if (!regex)
+			vg_prefix_context_set_case_insensitive(vcp, pattfpi[i]);
+
+		if (!vg_context_add_patterns(vcp,
+					     (const char ** const) patterns,
+					     npatterns))
+		return 1;
+	}
 
 	if (!vcp->vc_npatterns) {
 		fprintf(stderr, "No patterns to search\n");
