@@ -1444,6 +1444,9 @@ vg_ocl_gethash_check(vg_ocl_context_t *vocp, int slot)
 	ocl_hashes_out = (unsigned char *)
 		vg_ocl_map_arg_buffer(vocp, slot, 0, 0);
 
+	if (!ocl_hashes_out)
+		return 2;
+
 	round = vocp->voc_ocl_cols * vocp->voc_ocl_rows;
 
 	for (i = 0; i < round; i++, vxcp->vxc_delta++) {
@@ -1495,6 +1498,8 @@ vg_ocl_prefix_rekey(vg_ocl_context_t *vocp)
 	for (i = 0; i < vocp->voc_nslots; i++) {
 		ocl_found_out = (uint32_t *)
 			vg_ocl_map_arg_buffer(vocp, i, 0, 1);
+		if (!ocl_found_out)
+			return -1;
 		ocl_found_out[0] = 0xffffffff;
 		vg_ocl_unmap_arg_buffer(vocp, i, 0, ocl_found_out);
 	}
@@ -1508,13 +1513,15 @@ vg_ocl_prefix_rekey(vg_ocl_context_t *vocp)
 		if (i > vocp->voc_pattern_alloc) {
 			/* (re)allocate target buffer */
 			if (!vg_ocl_kernel_arg_alloc(vocp, -1, 5, 40 * i, 0))
-				return 0;
+				return -1;
 			vocp->voc_pattern_alloc = i;
 		}
 
 		/* Write range records */
 		ocl_targets_in = (unsigned char *)
 			vg_ocl_map_arg_buffer(vocp, 0, 5, 1);
+		if (!ocl_targets_in)
+			return -1;
 		vg_context_hash160_sort(vcp, ocl_targets_in);
 		vg_ocl_unmap_arg_buffer(vocp, 0, 5, ocl_targets_in);
 		vg_ocl_kernel_int_arg(vocp, -1, 4, i);
@@ -1538,6 +1545,8 @@ vg_ocl_prefix_check(vg_ocl_context_t *vocp, int slot)
 	/* Retrieve the found indicator */
 	ocl_found_out = (uint32_t *)
 		vg_ocl_map_arg_buffer(vocp, slot, 0, 2);
+	if (!ocl_found_out)
+		return 2;
 	found_delta = ocl_found_out[0];
 
 	if (found_delta != 0xffffffff) {

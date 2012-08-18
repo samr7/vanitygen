@@ -35,7 +35,7 @@
 #include <unistd.h>
 #endif
 
-#define VANITYGEN_VERSION "0.20"
+#define VANITYGEN_VERSION "0.21pre"
 
 typedef struct _vg_context_s vg_context_t;
 
