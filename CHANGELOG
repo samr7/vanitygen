@@ -92,3 +92,13 @@ Version 0.18, released July 4, 2012:
 Version 0.19, released July 4, 2012:
 	- Fix a potentially serious crash.
 	- Remove oclvanitygen "-r" option.
+
+Version 0.20, released August 18, 2012:
+	- Support binding to multiple OpenCL devices in oclvanitygen/miner
+	- Concurrent search for bounties with the same public key in
+	  oclvanityminer
+	- Support multiple pattern input files with different case-sensitivity
+	- Fix crash with -X option in vanitygen
+	- Fix case-insensitive search for prefixes that contain invalid
+	  characters in their given case, but are valid if case-swapped
+	- Follow HTTP redirections in oclvanityminer
