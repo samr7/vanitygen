@@ -1444,8 +1444,12 @@ vg_ocl_gethash_check(vg_ocl_context_t *vocp, int slot)
 	ocl_hashes_out = (unsigned char *)
 		vg_ocl_map_arg_buffer(vocp, slot, 0, 0);
 
-	if (!ocl_hashes_out)
+	if (!ocl_hashes_out) {
+		fprintf(stderr,
+			"ERROR: Could not map hash result buffer "
+			"for slot %d\n", slot);
 		return 2;
+	}
 
 	round = vocp->voc_ocl_cols * vocp->voc_ocl_rows;
 
@@ -1498,8 +1502,12 @@ vg_ocl_prefix_rekey(vg_ocl_context_t *vocp)
 	for (i = 0; i < vocp->voc_nslots; i++) {
 		ocl_found_out = (uint32_t *)
 			vg_ocl_map_arg_buffer(vocp, i, 0, 1);
-		if (!ocl_found_out)
+		if (!ocl_found_out) {
+			fprintf(stderr,
+				"ERROR: Could not map result buffer"
+				" for slot %d (rekey)\n", i);
 			return -1;
+		}
 		ocl_found_out[0] = 0xffffffff;
 		vg_ocl_unmap_arg_buffer(vocp, i, 0, ocl_found_out);
 	}
@@ -1520,8 +1528,11 @@ vg_ocl_prefix_rekey(vg_ocl_context_t *vocp)
 		/* Write range records */
 		ocl_targets_in = (unsigned char *)
 			vg_ocl_map_arg_buffer(vocp, 0, 5, 1);
-		if (!ocl_targets_in)
+		if (!ocl_targets_in) {
+			fprintf(stderr,
+				"ERROR: Could not map hash target buffer\n");
 			return -1;
+		}
 		vg_context_hash160_sort(vcp, ocl_targets_in);
 		vg_ocl_unmap_arg_buffer(vocp, 0, 5, ocl_targets_in);
 		vg_ocl_kernel_int_arg(vocp, -1, 4, i);
@@ -1545,8 +1556,12 @@ vg_ocl_prefix_check(vg_ocl_context_t *vocp, int slot)
 	/* Retrieve the found indicator */
 	ocl_found_out = (uint32_t *)
 		vg_ocl_map_arg_buffer(vocp, slot, 0, 2);
-	if (!ocl_found_out)
+	if (!ocl_found_out) {
+		fprintf(stderr,
+			"ERROR: Could not map result buffer"
+			" for slot %d\n", slot);
 		return 2;
+	}
 	found_delta = ocl_found_out[0];
 
 	if (found_delta != 0xffffffff) {
@@ -2049,8 +2064,10 @@ l_rekey:
 	/* Fill the sequential point array */
 	ocl_points_in = (unsigned char *)
 		vg_ocl_map_arg_buffer(vocp, 0, 3, 1);
-	if (!ocl_points_in)
+	if (!ocl_points_in) {
+		fprintf(stderr, "ERROR: Could not map column buffer\n");
 		goto enomem;
+	}
 	for (i = 0; i < ncols; i++)
 		vg_ocl_put_point_tpa(ocl_points_in, i, ppbase[i]);
 	vg_ocl_unmap_arg_buffer(vocp, 0, 3, ocl_points_in);
@@ -2131,8 +2148,12 @@ l_rekey:
 			/* Copy the row stride array to the device */
 			ocl_strides_in = (unsigned char *)
 				vg_ocl_map_arg_buffer(vocp, slot, 4, 1);
-			if (!ocl_strides_in)
+			if (!ocl_strides_in) {
+				fprintf(stderr,
+					"ERROR: Could not map row buffer "
+					"for slot %d\n", slot);
 				goto enomem;
+			}
 			memset(ocl_strides_in, 0, 64*nrows);
 			for (i = 0; i < nrows; i++)
 				vg_ocl_put_point(ocl_strides_in + (64*i),
