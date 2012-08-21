@@ -1189,7 +1189,7 @@ prefix_case_iter_next(prefix_case_iter_t *cip)
 	nbits = cip->ci_nbits;
 	max = (1UL << nbits) - 1;
 	val = cip->ci_value + 1;
-	if (val >= max)
+	if (val > max)
 		return 0;
 
 	for (i = 0, mask = 1; i < nbits; i++, mask <<= 1) {
