@@ -99,7 +99,7 @@ workitem_avl_insert(avl_root_t *rootp, workitem_t *vpnew)
 		int cmpres;
 		itemp = *ptrp;
 		vp = avl_item_entry(itemp, workitem_t, avlent);
-		cmpres = workitem_cmp(vpnew, vp);
+		cmpres = workitem_cmp(vp, vpnew);
 		if (cmpres > 0) {
 			ptrp = &itemp->ai_left;
 		} else {
