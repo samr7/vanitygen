@@ -964,6 +964,9 @@ main(int argc, char **argv)
 		return 1;
 	}
 
+	if (verbose > 1)
+		dump_work(&scp->items);
+
 	while (1) {
 		if (avl_root_empty(&scp->items))
 			server_context_getwork(scp);
@@ -985,6 +988,9 @@ main(int argc, char **argv)
 				active_pkb = NULL;
 			}
 			vg_context_clear_all_patterns(vcp);
+
+			if (verbose > 1)
+				dump_work(&scp->items);
 		}
 
 		if (!pkb) {
