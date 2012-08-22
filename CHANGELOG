@@ -102,3 +102,9 @@ Version 0.20, released August 18, 2012:
 	- Fix case-insensitive search for prefixes that contain invalid
 	  characters in their given case, but are valid if case-swapped
 	- Follow HTTP redirections in oclvanityminer
+
+Version 0.21, released August 21, 2012:
+	- Fix assertion failure in oclvanityminer work submission handler
+	- Fix bug in case-insensitive prefix enumerator that would skip the
+	  last possible combination.
+	- More useful error messages for OpenCL failures in oclvanitygen/miner
