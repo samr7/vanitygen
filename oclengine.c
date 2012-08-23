@@ -2712,7 +2712,7 @@ vg_ocl_context_new_from_devstr(vg_context_t *vcp, const char *devstr,
 			nthreads = atoi(param);
 			if (nthreads == 0) {
 				fprintf(stderr,
-					"Invalid thread count '%s'\n", optarg);
+					"Invalid thread count '%s'\n", param);
 				continue;
 			}
 		}
