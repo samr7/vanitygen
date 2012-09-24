@@ -39,7 +39,7 @@ usage(const char *name)
 {
 	fprintf(stderr,
 "oclVanitygen %s (" OPENSSL_VERSION_TEXT ")\n"
-"Usage: %s [-vqrikNTS] [-d <device>] [-f <filename>|-] [<pattern>...]\n"
+"Usage: %s [-vqrik1NTS] [-d <device>] [-f <filename>|-] [<pattern>...]\n"
 "Generates a bitcoin receiving address matching <pattern>, and outputs the\n"
 "address and associated private key.  The private key may be stored in a safe\n"
 "location or imported into a bitcoin client to spend any balance received on\n"
@@ -56,6 +56,7 @@ usage(const char *name)
 "-q            Quiet output\n"
 "-i            Case-insensitive prefix search\n"
 "-k            Keep pattern and continue search after finding a match\n"
+"-1            Stop after first match\n"
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
 "-X <version>  Generate address with the given version\n"
@@ -102,6 +103,7 @@ main(int argc, char **argv)
 	int nrows = 0, ncols = 0;
 	int invsize = 0;
 	int remove_on_match = 1;
+	int only_one = 0;
 	int verify_mode = 0;
 	int safe_mode = 0;
 	vg_context_t *vcp = NULL;
@@ -121,7 +123,7 @@ main(int argc, char **argv)
 	int i;
 
 	while ((opt = getopt(argc, argv,
-			     "vqikNTX:eE:p:P:d:w:t:g:b:VSh?f:o:s:D:")) != -1) {
+			     "vqik1NTX:eE:p:P:d:w:t:g:b:VSh?f:o:s:D:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -134,6 +136,9 @@ main(int argc, char **argv)
 			break;
 		case 'k':
 			remove_on_match = 0;
+			break;
+		case '1':
+			only_one = 1;
 			break;
 		case 'N':
 			addrtype = 52;
@@ -328,6 +333,7 @@ main(int argc, char **argv)
 	vcp->vc_verbose = verbose;
 	vcp->vc_result_file = result_file;
 	vcp->vc_remove_on_match = remove_on_match;
+	vcp->vc_only_one = only_one;
 	vcp->vc_pubkeytype = addrtype;
 	vcp->vc_pubkey_base = pubkey_base;
 

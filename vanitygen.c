@@ -295,7 +295,7 @@ usage(const char *name)
 {
 	fprintf(stderr,
 "Vanitygen %s (" OPENSSL_VERSION_TEXT ")\n"
-"Usage: %s [-vqrikNT] [-t <threads>] [-f <filename>|-] [<pattern>...]\n"
+"Usage: %s [-vqnrik1NT] [-t <threads>] [-f <filename>|-] [<pattern>...]\n"
 "Generates a bitcoin receiving address matching <pattern>, and outputs the\n"
 "address and associated private key.  The private key may be stored in a safe\n"
 "location or imported into a bitcoin client to spend any balance received on\n"
@@ -305,10 +305,12 @@ usage(const char *name)
 "Options:\n"
 "-v            Verbose output\n"
 "-q            Quiet output\n"
+"-n            Simulate\n"
 "-r            Use regular expression match instead of prefix\n"
 "              (Feasibility of expression is not checked)\n"
 "-i            Case-insensitive prefix search\n"
 "-k            Keep pattern and continue search after finding a match\n"
+"-1            Stop after first match\n"
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
 "-X <version>  Generate address with the given version\n"
@@ -337,7 +339,9 @@ main(int argc, char **argv)
 	int regex = 0;
 	int caseinsensitive = 0;
 	int verbose = 1;
+	int simulate = 0;
 	int remove_on_match = 1;
+	int only_one = 0;
 	int prompt_password = 0;
 	int opt;
 	char *seedfile = NULL;
@@ -357,13 +361,16 @@ main(int argc, char **argv)
 
 	int i;
 
-	while ((opt = getopt(argc, argv, "vqrikeE:P:NTX:F:t:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqnrik1eE:P:NTX:F:t:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
 			break;
 		case 'q':
 			verbose = 0;
+			break;
+		case 'n':
+			simulate = 1;
 			break;
 		case 'r':
 			regex = 1;
@@ -373,6 +380,9 @@ main(int argc, char **argv)
 			break;
 		case 'k':
 			remove_on_match = 0;
+			break;
+		case '1':
+			only_one = 1;
 			break;
 		case 'N':
 			addrtype = 52;
@@ -537,6 +547,7 @@ main(int argc, char **argv)
 	vcp->vc_verbose = verbose;
 	vcp->vc_result_file = result_file;
 	vcp->vc_remove_on_match = remove_on_match;
+	vcp->vc_only_one = only_one;
 	vcp->vc_format = format;
 	vcp->vc_pubkeytype = pubkeytype;
 	vcp->vc_pubkey_base = pubkey_base;
@@ -597,6 +608,9 @@ main(int argc, char **argv)
 	if ((verbose > 0) && regex && (vcp->vc_npatterns > 1))
 		fprintf(stderr,
 			"Regular expressions: %ld\n", vcp->vc_npatterns);
+
+	if (simulate)
+		return 0;
 
 	if (!start_threads(vcp, nthreads))
 		return 1;
