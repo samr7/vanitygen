@@ -98,6 +98,7 @@ struct _vg_context_s {
 	const char		*vc_result_file;
 	const char		*vc_key_protect_pass;
 	int			vc_remove_on_match;
+	int			vc_only_one;
 	int			vc_verbose;
 	enum vg_format		vc_format;
 	int			vc_pubkeytype;

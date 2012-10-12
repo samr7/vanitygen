@@ -1489,6 +1489,10 @@ research:
 
 		vcpp->base.vc_found++;
 
+		if (vcpp->base.vc_only_one) {
+			return 2;
+		}
+
 		if (vcpp->base.vc_remove_on_match) {
 			/* Subtract the range from the difficulty */
 			vg_prefix_range_sum(vp,
@@ -1783,6 +1787,11 @@ restart_loop:
 		vcrp->base.vc_output_match(&vcrp->base, vxcp->vxc_key,
 					   vcrp->vcr_regex_pat[i]);
 		vcrp->base.vc_found++;
+
+		if (vcrp->base.vc_only_one) {
+			res = 2;
+			goto out;
+		}
 
 		if (vcrp->base.vc_remove_on_match) {
 			pcre_free(vcrp->vcr_regex[i]);
