@@ -156,6 +156,7 @@ server_workitem_free(workitem_t *wip)
 typedef struct pubkeybatch_s {
 	avl_item_t avlent;
 	EC_POINT *pubkey;
+	const char *pubkey_hex;
 	avl_root_t items;
 	int nitems;
 	double total_value;
@@ -173,41 +174,49 @@ server_batch_free(pubkeybatch_t *pbatch)
 	}
 	if (pbatch->pubkey)
 		EC_POINT_free(pbatch->pubkey);
+	if (pbatch->pubkey_hex)
+		free((char*)pbatch->pubkey_hex);
 	free(pbatch);
 }
 
 static int
-pubkeybatch_cmp(pubkeybatch_t *a, pubkeybatch_t *b, const EC_GROUP *pgroup)
+pubkeybatch_cmp(pubkeybatch_t *a, pubkeybatch_t *b)
 {
-	return EC_POINT_cmp(pgroup, a->pubkey, b->pubkey, NULL);
+	return strcmp(a->pubkey_hex, b->pubkey_hex);
 }
 
 static pubkeybatch_t *
 pubkeybatch_avl_search(avl_root_t *rootp, const EC_POINT *pubkey,
 		       const EC_GROUP *pgroup)
 {
+	char *pubkey_hex;
 	pubkeybatch_t *vp;
 	avl_item_t *itemp = rootp->ar_root;
-
+	pubkey_hex = EC_POINT_point2hex(pgroup,
+					pubkey,
+					POINT_CONVERSION_UNCOMPRESSED,
+					NULL);
 	while (itemp) {
 		int cmpres;
 		vp = avl_item_entry(itemp, pubkeybatch_t, avlent);
-		cmpres = EC_POINT_cmp(pgroup, vp->pubkey, pubkey, NULL);
+		cmpres = strcmp(pubkey_hex, vp->pubkey_hex);
 		if (cmpres > 0) {
 			itemp = itemp->ai_left;
 		} else {
 			if (cmpres < 0) {
 				itemp = itemp->ai_right;
-			} else
+			} else {
+				free(pubkey_hex);
 				return vp;
+			}
 		}
 	}
+	free(pubkey_hex);
 	return NULL;
 }
 
 static pubkeybatch_t *
-pubkeybatch_avl_insert(avl_root_t *rootp, pubkeybatch_t *vpnew,
-		       const EC_GROUP *pgroup)
+pubkeybatch_avl_insert(avl_root_t *rootp, pubkeybatch_t *vpnew)
 {
 	pubkeybatch_t *vp;
 	avl_item_t *itemp = NULL;
@@ -216,7 +225,7 @@ pubkeybatch_avl_insert(avl_root_t *rootp, pubkeybatch_t *vpnew,
 		int cmpres;
 		itemp = *ptrp;
 		vp = avl_item_entry(itemp, pubkeybatch_t, avlent);
-		cmpres = pubkeybatch_cmp(vpnew, vp, pgroup);
+		cmpres = pubkeybatch_cmp(vpnew, vp);
 		if (cmpres > 0) {
 			ptrp = &itemp->ai_left;
 		} else {
@@ -414,7 +423,11 @@ server_workitem_add(server_request_t *reqp, workitem_t *wip)
 		avl_root_init(&pbatch->items);
 		pbatch->total_value = 0;
 		pbatch->pubkey = wip->pubkey;
-		pubkeybatch_avl_insert(&reqp->items, pbatch, reqp->group);
+		pbatch->pubkey_hex = EC_POINT_point2hex(reqp->group, 
+					wip->pubkey, 
+					POINT_CONVERSION_UNCOMPRESSED, 
+					NULL);
+		pubkeybatch_avl_insert(&reqp->items, pbatch);
 		reqp->nitems++;
 	}
 
@@ -443,7 +456,7 @@ server_body_reader(const char *buf, size_t elemsize, size_t len, void *param)
 	if (!len)
 		return 0;
 
-	if ((reqp->part_size < (reqp->part_end + len)) &&
+	if ((reqp->part_size < (reqp->part_end + len + 1)) &&
 	    (reqp->part_off > 0)) {
 		memmove(reqp->part_buf,
 			reqp->part_buf + reqp->part_off,
@@ -452,10 +465,10 @@ server_body_reader(const char *buf, size_t elemsize, size_t len, void *param)
 		reqp->part_off = 0;
 	}
 
-	if (reqp->part_size < (reqp->part_end + len)) {
+	if (reqp->part_size < (reqp->part_end + len + 1)) {
 		if (reqp->part_size == 0)
 			reqp->part_size = 4096;
-		while (reqp->part_size < (reqp->part_end + len)) {
+		while (reqp->part_size < (reqp->part_end + len + 1)) {
 			reqp->part_size *= 2;
 			if (reqp->part_size > (1024*1024)) {
 				fprintf(stderr, "Line too long from server");
@@ -473,6 +486,7 @@ server_body_reader(const char *buf, size_t elemsize, size_t len, void *param)
 
 	memcpy(reqp->part_buf + reqp->part_end, buf, len);
 	reqp->part_end += len;
+	reqp->part_buf[reqp->part_end] = '\0';
 
 	line = reqp->part_buf + reqp->part_off;
 	while (1) {
