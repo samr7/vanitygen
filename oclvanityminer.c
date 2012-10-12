@@ -175,7 +175,7 @@ server_batch_free(pubkeybatch_t *pbatch)
 	if (pbatch->pubkey)
 		EC_POINT_free(pbatch->pubkey);
 	if (pbatch->pubkey_hex)
-		free((char*)pbatch->pubkey_hex);
+		OPENSSL_free((char*)pbatch->pubkey_hex);
 	free(pbatch);
 }
 
@@ -206,12 +206,12 @@ pubkeybatch_avl_search(avl_root_t *rootp, const EC_POINT *pubkey,
 			if (cmpres < 0) {
 				itemp = itemp->ai_right;
 			} else {
-				free(pubkey_hex);
+				OPENSSL_free(pubkey_hex);
 				return vp;
 			}
 		}
 	}
-	free(pubkey_hex);
+	OPENSSL_free(pubkey_hex);
 	return NULL;
 }
 
@@ -649,8 +649,7 @@ server_context_submit_solution(server_context_t *ctxp,
 	creq = curl_easy_init();
 	if (curl_easy_setopt(creq, CURLOPT_URL, urlbuf) ||
 	    curl_easy_setopt(creq, CURLOPT_VERBOSE, ctxp->verbose > 1) ||
-	    curl_easy_setopt(creq, CURLOPT_FOLLOWLOCATION, 1) ||
-	    curl_easy_setopt(creq, CURLOPT_POST, 1)) {
+	    curl_easy_setopt(creq, CURLOPT_FOLLOWLOCATION, 1)) {
 		fprintf(stderr, "Failed to set up libcurl\n");
 		exit(1);
 	}
