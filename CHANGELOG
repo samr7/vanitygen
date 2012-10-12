@@ -108,3 +108,7 @@ Version 0.21, released August 21, 2012:
 	- Fix bug in case-insensitive prefix enumerator that would skip the
 	  last possible combination.
 	- More useful error messages for OpenCL failures in oclvanitygen/miner
+
+Version 0.22, released October 11, 2012:
+	- Fix bugs in oclvanityminer bounty list parser
+	- Use GET instead of POST for work submission in oclvanityminer
