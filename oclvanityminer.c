@@ -474,7 +474,7 @@ server_body_reader(const char *buf, size_t elemsize, size_t len, void *param)
 	memcpy(reqp->part_buf + reqp->part_end, buf, len);
 	reqp->part_end += len;
 
-	line = reqp->part_buf;
+	line = reqp->part_buf + reqp->part_off;
 	while (1) {
 		sep = strchr(line, '\n');
 		if (!sep)
