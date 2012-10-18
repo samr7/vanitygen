@@ -319,7 +319,7 @@ server_workitem_new(server_request_t *reqp,
 	wip->addrtype = addrtype;
 	wip->difficulty = difficulty;
 	wip->reward = reward;
-	wip->value = (reward * 1000000.0 * 3600.0) / difficulty;
+	wip->value = (reward * 1000000.0) / difficulty;
 
 	return wip;
 }
@@ -554,13 +554,13 @@ dump_work(avl_root_t *work)
 		     wip != NULL;
 		     wip = workitem_avl_next(wip)) {
 			printf("Pattern: \"%s\" Reward: %f "
-			       "Value: %f BTC/MkeyHr\n",
+			       "Value: %f BTC/Mkey\n",
 			       wip->pattern,
 			       wip->reward,
 			       wip->value);
 		}
 		if (pbatch->nitems > 1)
-			printf("Batch of %d, total value: %f BTC/MkeyHr\n",
+			printf("Batch of %d, total value: %f BTC/Mkey\n",
 			       pbatch->nitems, pbatch->total_value);
 	}
 }
@@ -1022,7 +1022,7 @@ main(int argc, char **argv)
 			     wip = workitem_avl_next(wip)) {
 				fprintf(stderr,
 					"Searching for pattern: \"%s\" "
-					"Reward: %f Value: %f BTC/MkeyHr\n",
+					"Reward: %f Value: %f BTC/Mkey\n",
 					wip->pattern,
 					wip->reward,
 					wip->value);
