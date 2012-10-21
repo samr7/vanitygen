@@ -802,6 +802,7 @@ main(int argc, char **argv)
 	int res;
 	int thread_started = 0;
 	pubkeybatch_t *active_pkb = NULL;
+	float active_pkb_value = 0;
 
 	server_context_t *scp = NULL;
 	pubkeybatch_t *pkb;
@@ -1016,6 +1017,7 @@ main(int argc, char **argv)
 		} else if (!active_pkb) {
 			workitem_t *wip;
 			was_sleeping = 0;
+			active_pkb_value = 0;
 			vcp->vc_pubkey_base = pkb->pubkey;
 			for (wip = workitem_avl_first(&pkb->items);
 			     wip != NULL;
@@ -1033,9 +1035,16 @@ main(int argc, char **argv)
 					fprintf(stderr,
 					   "WARNING: could not add pattern\n");
 				}
+				else {
+					active_pkb_value += wip->value;
+				}
+				
 				assert(vcp->vc_npatterns);
 			}
 
+			fprintf(stderr, 
+				"\nTotal value for current work: %f BTC/Mkey\n", 
+				active_pkb_value);
 			res = vg_context_start_threads(vcp);
 			if (res)
 				return 1;
