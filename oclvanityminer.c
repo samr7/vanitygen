@@ -319,7 +319,7 @@ server_workitem_new(server_request_t *reqp,
 	wip->addrtype = addrtype;
 	wip->difficulty = difficulty;
 	wip->reward = reward;
-	wip->value = (reward * 1000000.0) / difficulty;
+	wip->value = (reward * 1000000000.0) / difficulty;
 
 	return wip;
 }
@@ -554,13 +554,13 @@ dump_work(avl_root_t *work)
 		     wip != NULL;
 		     wip = workitem_avl_next(wip)) {
 			printf("Pattern: \"%s\" Reward: %f "
-			       "Value: %f BTC/Mkey\n",
+			       "Value: %f BTC/Gkey\n",
 			       wip->pattern,
 			       wip->reward,
 			       wip->value);
 		}
 		if (pbatch->nitems > 1)
-			printf("Batch of %d, total value: %f BTC/Mkey\n",
+			printf("Batch of %d, total value: %f BTC/Gkey\n",
 			       pbatch->nitems, pbatch->total_value);
 	}
 }
@@ -1024,7 +1024,7 @@ main(int argc, char **argv)
 			     wip = workitem_avl_next(wip)) {
 				fprintf(stderr,
 					"Searching for pattern: \"%s\" "
-					"Reward: %f Value: %f BTC/Mkey\n",
+					"Reward: %f Value: %f BTC/Gkey\n",
 					wip->pattern,
 					wip->reward,
 					wip->value);
@@ -1043,7 +1043,7 @@ main(int argc, char **argv)
 			}
 
 			fprintf(stderr, 
-				"\nTotal value for current work: %f BTC/Mkey\n", 
+				"\nTotal value for current work: %f BTC/Gkey\n", 
 				active_pkb_value);
 			res = vg_context_start_threads(vcp);
 			if (res)
