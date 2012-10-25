@@ -995,6 +995,8 @@ main(int argc, char **argv)
 			fprintf(stderr,
 				"Value of current work (%f BTC/Gkey) does not meet minimum value (%f BTC/Gkey)\n",
 				pkb->total_value, min_value);
+			fprintf(stderr, "Sleeping\n");
+			was_sleeping = 1;
 			pkb = NULL;
 		}
 		
