@@ -991,7 +991,7 @@ main(int argc, char **argv)
 
 		pkb = most_valuable_pkb(scp);
 		
-		if( pkb->total_value < min_value ) {
+		if( pkb && pkb->total_value < min_value ) {
 			fprintf(stderr,
 				"Value of current work (%f BTC/Gkey) does not meet minimum value (%f BTC/Gkey)\n",
 				pkb->total_value, min_value);
