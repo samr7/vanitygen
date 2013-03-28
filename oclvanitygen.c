@@ -327,7 +327,7 @@ main(int argc, char **argv)
 			fprintf(stderr, "Could not load RNG seed '%s'\n", seedfile);
 			return 1;
 		}
-		if (verbose > 0) {
+		if (verbose > 1) {
 			fprintf(stderr,
 				"Read %d bytes from RNG seed file\n", opt);
 		}
