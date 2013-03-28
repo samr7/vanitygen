@@ -516,6 +516,17 @@ main(int argc, char **argv)
 		addrtype = scriptaddrtype;
 	}
 
+	if (!seedfile)
+	{
+#if !defined(_WIN32)
+	 struct stat st;
+	 if (stat("/dev/random", &st) == 0)
+	 {
+	     seedfile = "/dev/random";
+	 }
+#endif
+	}
+
 	if (seedfile) {
 		opt = -1;
 #if !defined(_WIN32)
