@@ -527,7 +527,7 @@ main(int argc, char **argv)
 #endif
 		opt = RAND_load_file(seedfile, opt);
 		if (!opt) {
-			fprintf(stderr, "Could not load RNG seed %s\n", optarg);
+			fprintf(stderr, "Could not load RNG seed '%s'\n", seedfile);
 			return 1;
 		}
 		if (verbose > 0) {
