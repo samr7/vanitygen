@@ -256,7 +256,7 @@ vg_exec_context_calc_address(vg_exec_context_t *vxcp)
 	}
 	len = EC_POINT_point2oct(pgroup,
 				 pubkey,
-				 POINT_CONVERSION_UNCOMPRESSED,
+				 vxcp->vxc_vc->vc_compressed ? POINT_CONVERSION_COMPRESSED : POINT_CONVERSION_UNCOMPRESSED,
 				 eckey_buf,
 				 sizeof(eckey_buf),
 				 vxcp->vxc_bnctx);
