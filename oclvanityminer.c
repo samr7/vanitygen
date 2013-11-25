@@ -541,11 +541,13 @@ server_body_reader(const char *buf, size_t elemsize, size_t len, void *param)
 }
 
 void
-dump_work(avl_root_t *work)
+dump_work(server_context_t *scp)
 {
+avl_root_t *work = &scp->items;
 	pubkeybatch_t *pbatch;
 	workitem_t *wip;
 	printf("Available bounties:\n");
+
 	for (pbatch = pubkeybatch_avl_first(work);
 	     pbatch != NULL;
 	     pbatch = pubkeybatch_avl_next(pbatch)) {
@@ -553,8 +555,14 @@ dump_work(avl_root_t *work)
 		for (wip = workitem_avl_first(&pbatch->items);
 		     wip != NULL;
 		     wip = workitem_avl_next(wip)) {
-			printf("Pattern: \"%s\" Reward: %f "
+                     char *pubhex = EC_POINT_point2hex(EC_KEY_get0_group(scp->dummy_key),
+                                    wip->pubkey,
+                                    POINT_CONVERSION_UNCOMPRESSED,
+                                    NULL);
+
+			printf("PubKey: \"%s\" Pattern: \"%s\" Reward: %f "
 			       "Value: %f BTC/Gkey\n",
+			       pubhex,
 			       wip->pattern,
 			       wip->reward,
 			       wip->value);
@@ -983,7 +991,7 @@ main(int argc, char **argv)
 	}
 
 	if (verbose > 1)
-		dump_work(&scp->items);
+		dump_work(scp);
 
 	while (1) {
 		if (avl_root_empty(&scp->items))
@@ -1017,7 +1025,7 @@ main(int argc, char **argv)
 			vg_context_clear_all_patterns(vcp);
 
 			if (verbose > 1)
-				dump_work(&scp->items);
+				dump_work(scp);
 		}
 
 		if (!pkb) {
