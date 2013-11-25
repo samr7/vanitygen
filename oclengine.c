@@ -933,6 +933,9 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did,
 	if (vocp->voc_quirks & VG_OCL_AMD_BFI_INT)
 		end += snprintf(optbuf + end, sizeof(optbuf) - end,
 				"-DAMD_BFI_INT ");
+	if (vcp->vc_compressed)
+		end += snprintf(optbuf + end, sizeof(optbuf) - end,
+				"-DCOMPRESSED_ADDRESS");
 	if (vocp->voc_quirks & VG_OCL_NV_VERBOSE)
 		end += snprintf(optbuf + end, sizeof(optbuf) - end,
 				"-cl-nv-verbose ");
