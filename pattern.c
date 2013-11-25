@@ -728,11 +728,10 @@ get_prefix_ranges(int addrtype, const char *pfx, BIGNUM **result,
 		if (i == zero_prefix) {
 			if (c == 0) {
 				/* Add another zero prefix */
-				/* Removed the silly (sarcasm) limitation of the prefix */
 				zero_prefix++;
-				if (zero_prefix < 0) {
+				if (zero_prefix > 19) {
 					fprintf(stderr,
-						"Prefix '%s' is way too short\n",
+						"Prefix '%s' is too long\n",
 						pfx);
 					goto out;
 				}
