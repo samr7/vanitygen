@@ -770,7 +770,8 @@ usage(const char *name)
 "-t <threads>  Set target thread count per multiprocessor\n"
 "-g <x>x<y>    Set grid size\n"
 "-b <invsize>  Set modular inverse ops per thread\n"
-"-V            Enable kernel/OpenCL/hardware verification (SLOW)\n",
+"-V            Enable kernel/OpenCL/hardware verification (SLOW)\n"
+"-m <minvalue> Set minimum value (in BTC/Gkey) for the miner to accept work\n",
 version, name);
 }
 
@@ -792,6 +793,7 @@ main(int argc, char **argv)
 	int invsize = 0;
 	int verify_mode = 0;
 	int safe_mode = 0;
+	float min_value = 0;
 
 	char *devstrs[MAX_DEVS];
 	int ndevstrs = 0;
@@ -802,7 +804,6 @@ main(int argc, char **argv)
 	int res;
 	int thread_started = 0;
 	pubkeybatch_t *active_pkb = NULL;
-	float active_pkb_value = 0;
 
 	server_context_t *scp = NULL;
 	pubkeybatch_t *pkb;
@@ -820,7 +821,7 @@ main(int argc, char **argv)
 	}
 
 	while ((opt = getopt(argc, argv,
-			     "u:a:vqp:d:w:t:g:b:VD:Sh?i:")) != -1) {
+			     "u:a:vqp:d:w:t:g:b:VD:Sh?i:m:")) != -1) {
 		switch (opt) {
 		case 'u':
 			url = optarg;
@@ -906,6 +907,9 @@ main(int argc, char **argv)
 			}
 			devstrs[ndevstrs++] = optarg;
 			break;
+		case 'm':
+			min_value = atof(optarg);
+			break;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -986,7 +990,16 @@ main(int argc, char **argv)
 			server_context_getwork(scp);
 
 		pkb = most_valuable_pkb(scp);
-
+		
+		if( pkb && pkb->total_value < min_value ) {
+			fprintf(stderr,
+				"Value of current work (%f BTC/Gkey) does not meet minimum value (%f BTC/Gkey)\n",
+				pkb->total_value, min_value);
+			fprintf(stderr, "Sleeping\n");
+			was_sleeping = 1;
+			pkb = NULL;
+		}
+		
 		/* If the work item is the same as the one we're executing,
 		   keep it */
 		if (pkb && active_pkb &&
@@ -1017,7 +1030,6 @@ main(int argc, char **argv)
 		} else if (!active_pkb) {
 			workitem_t *wip;
 			was_sleeping = 0;
-			active_pkb_value = 0;
 			vcp->vc_pubkey_base = pkb->pubkey;
 			for (wip = workitem_avl_first(&pkb->items);
 			     wip != NULL;
@@ -1035,16 +1047,14 @@ main(int argc, char **argv)
 					fprintf(stderr,
 					   "WARNING: could not add pattern\n");
 				}
-				else {
-					active_pkb_value += wip->value;
-				}
 				
 				assert(vcp->vc_npatterns);
 			}
 
 			fprintf(stderr, 
 				"\nTotal value for current work: %f BTC/Gkey\n", 
-				active_pkb_value);
+				pkb->total_value);
+			
 			res = vg_context_start_threads(vcp);
 			if (res)
 				return 1;

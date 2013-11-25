@@ -63,6 +63,7 @@ usage(const char *name)
 "-F <format>   Generate address with the given format (pubkey, compressed)\n"
 "-e            Encrypt private keys, prompt for password\n"
 "-E <password> Encrypt private keys with <password> (UNSAFE)\n"
+"-P <pubkey>   Use split-key method with <pubkey> as base public key\n"
 "-p <platform> Select OpenCL platform\n"
 "-d <device>   Select OpenCL device\n"
 "-D <devstr>   Use OpenCL device, identified by device string\n"
