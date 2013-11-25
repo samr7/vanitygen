@@ -244,20 +244,7 @@ out:
 int
 count_processors(void)
 {
-	FILE *fp;
-	char buf[512];
-	int count = 0;
-
-	fp = fopen("/proc/cpuinfo", "r");
-	if (!fp)
-		return -1;
-
-	while (fgets(buf, sizeof(buf), fp)) {
-		if (!strncmp(buf, "processor\t", 10))
-			count += 1;
-	}
-	fclose(fp);
-	return count;
+    return sysconf( _SC_NPROCESSORS_ONLN );
 }
 #endif
 
