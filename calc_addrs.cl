@@ -177,7 +177,7 @@ typedef struct {
 } bignum;
 
 __constant bn_word modulus[] = { MODULUS_BYTES };
-__constant bignum bn_zero;
+__constant bignum bn_zero = {};
 
 __constant bn_word mont_rr[BN_NWORDS] = { 0xe90a1, 0x7a2, 0x1, 0, };
 __constant bn_word mont_n0[2] = { 0xd2253531, 0xd838091d };
