@@ -211,6 +211,38 @@ __constant bn_word mont_n0[2] = { 0xd2253531, 0xd838091d };
 
 
 /*
+ * Prototypes
+ */
+void bn_lshift1(bignum *bn);
+void bn_rshift(bignum *bn, int shift);
+void bn_rshift1(bignum *bn);
+void bn_rshift1_2(bignum *bna, bignum *bnb);
+int bn_ucmp_ge(bignum *a, bignum *b);
+int bn_ucmp_ge_c(bignum *a, __constant bn_word *b);
+void bn_neg(bignum *n);
+bn_word bn_uadd_words_seq(bn_word *r, bn_word *a, bn_word *b);
+bn_word bn_uadd_words_c_seq(bn_word *r, bn_word *a, __constant bn_word *b);
+bn_word bn_usub_words_seq(bn_word *r, bn_word *a, bn_word *b);
+bn_word bn_usub_words_c_seq(bn_word *r, bn_word *a, __constant bn_word *b);
+bn_word bn_uadd_words_vliw(bn_word *r, bn_word *a, bn_word *b);
+bn_word bn_uadd_words_c_vliw(bn_word *r, bn_word *a, __constant bn_word *b);
+bn_word bn_usub_words_vliw(bn_word *r, bn_word *a, bn_word *b);
+bn_word bn_usub_words_c_vliw(bn_word *r, bn_word *a, __constant bn_word *b);
+void bn_mod_add(bignum *r, bignum *a, bignum *b);
+void bn_mod_sub(bignum *r, bignum *a, bignum *b);
+void bn_mod_lshift1(bignum *bn);
+void bn_mul_mont(bignum *r, bignum *a, bignum *b);
+void bn_from_mont(bignum *rb, bignum *b);
+void bn_mod_inverse(bignum *r, bignum *n);
+void sha2_256_init(uint *out);
+void sha2_256_block(uint *out, uint *in);
+void ripemd160_init(uint *out);
+void ripemd160_block(uint *out, uint *in);
+void hash_ec_point(uint *hash_out, __global bn_word *xy, __global bn_word *zip);
+int hash160_ucmp_g(uint *a, __global uint *bound);
+
+
+/*
  * Bitwise shift
  */
 
@@ -531,7 +563,7 @@ bn_mul_mont(bignum *r, bignum *a, bignum *b)
 	bn_word tea, teb, c, p, s, m;
 
 #if !defined(VERY_EXPENSIVE_BRANCHES)
-	int q;
+	uint q;
 #endif
 
 	c = 0;
@@ -667,7 +699,7 @@ void
 bn_mod_inverse(bignum *r, bignum *n)
 {
 	bignum a, b, x, y;
-	int shift;
+	uint shift;
 	bn_word xc, yc;
 	for (shift = 0; shift < BN_NWORDS; shift++) {
 		a.d[shift] = modulus[shift];
