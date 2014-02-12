@@ -32,6 +32,15 @@
 #include "pattern.h"
 #include "util.h"
 
+
+#if defined(__APPLE__)
+
+#include <sys/types.h>
+#include <sys/sysctl.h>
+
+#endif
+
+
 const char *version = VANITYGEN_VERSION;
 
 
@@ -241,6 +250,28 @@ out:
 
 
 #if !defined(_WIN32)
+// define count_processors only on non Windows systems 
+
+#if defined(__APPLE__)
+// possibly *BSD goes here as well
+
+int
+count_processors(void)
+{
+	int error = 0;
+	int value = 0;
+	size_t length = sizeof(value);
+
+	error = sysctlbyname("hw.ncpu", &value, &length, NULL, 0);
+	if (error == 0)
+		return value; 
+
+	return 0;
+}
+
+#else
+
+// default case is Linux
 int
 count_processors(void)
 {
@@ -259,6 +290,8 @@ count_processors(void)
 	fclose(fp);
 	return count;
 }
+#endif
+
 #endif
 
 int
