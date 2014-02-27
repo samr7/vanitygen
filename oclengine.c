@@ -5,7 +5,7 @@
  * Vanitygen is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
- * any later version. 
+ * any later version.
  *
  * Vanitygen is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -48,6 +48,10 @@
 
 #define is_pow2(v) (!((v) & ((v)-1)))
 #define round_up_pow2(x, a) (((x) + ((a)-1)) & ~((a)-1))
+
+#ifndef VG_OCL_SOURCE_PREFIX
+ #define VG_OCL_SOURCE_PREFIX
+#endif // VG_OCL_SOURCE_PREFIX
 
 static void vg_ocl_free_args(vg_ocl_context_t *vocp);
 static void *vg_opencl_loop(vg_exec_context_t *arg);
@@ -399,6 +403,7 @@ enum {
 	VG_OCL_NV_VERBOSE           = (1 << 5),
 	VG_OCL_BROKEN               = (1 << 6),
 	VG_OCL_NO_BINARIES          = (1 << 7),
+	VG_OCL_NO_CALLBACK          = (1 << 8),
 
 	VG_OCL_OPTIMIZATIONS        = (VG_OCL_DEEP_PREPROC_UNROLL |
 				       VG_OCL_PRAGMA_UNROLL |
@@ -453,6 +458,10 @@ vg_ocl_get_quirks(vg_ocl_context_t *vocp)
 			}
 		}
 		break;
+    case 0x0166: /* Intel */
+        quirks |= VG_OCL_NO_CALLBACK;
+        quirks &= ~VG_OCL_DEEP_PREPROC_UNROLL;
+        break;
 	default:
 		break;
 	}
@@ -897,7 +906,7 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did,
 
 	vocp->voc_oclctx = clCreateContext(NULL,
 					   1, &did,
-					   vg_ocl_context_callback,
+					   ((vocp->voc_quirks & VG_OCL_NO_CALLBACK) ? NULL : vg_ocl_context_callback),
 					   NULL,
 					   &ret);
 	if (!vocp->voc_oclctx) {
@@ -933,11 +942,14 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did,
 	if (vocp->voc_quirks & VG_OCL_AMD_BFI_INT)
 		end += snprintf(optbuf + end, sizeof(optbuf) - end,
 				"-DAMD_BFI_INT ");
+	if (vcp->vc_compressed)
+		end += snprintf(optbuf + end, sizeof(optbuf) - end,
+				"-DCOMPRESSED_ADDRESS");
 	if (vocp->voc_quirks & VG_OCL_NV_VERBOSE)
 		end += snprintf(optbuf + end, sizeof(optbuf) - end,
 				"-cl-nv-verbose ");
 
-	if (!vg_ocl_load_program(vcp, vocp, "calc_addrs.cl", optbuf))
+	if (!vg_ocl_load_program(vcp, vocp, VG_OCL_SOURCE_PREFIX "calc_addrs.cl", optbuf))
 		return 0;
 	return 1;
 }
@@ -1023,7 +1035,7 @@ vg_ocl_kernel_arg_alloc(vg_ocl_context_t *vocp, int slot,
 					     karg,
 					     sizeof(clbuf),
 					     &clbuf);
-			
+
 			if (ret) {
 				fprintf(stderr,
 					"clSetKernelArg(%d,%d): ", knum, karg);
@@ -1055,7 +1067,7 @@ vg_ocl_copyout_arg(vg_ocl_context_t *vocp, int wslot, int arg,
 				   buffer,
 				   0, NULL,
 				   NULL);
-			
+
 	if (ret) {
 		fprintf(stderr, "clEnqueueWriteBuffer(%d): ", arg);
 		vg_ocl_error(vocp, ret, NULL);
@@ -2182,7 +2194,7 @@ l_rekey:
 			slot_busy = 1;
 			slot = (slot + 1) % nslots;
 
-		} else { 
+		} else {
 			if (slot_busy) {
 				pthread_mutex_lock(&vocp->voc_lock);
 				while (vocp->voc_ocl_slot != -1) {

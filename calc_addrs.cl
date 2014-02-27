@@ -67,7 +67,7 @@
  * Steps:
  * - Compute Px = Pxj * (1/Pz)^2
  * - Compute Py = Pyj * (1/Pz)^3
- * - Compute H = RIPEMD160(SHA256(0x04 | Px | Py))
+ * - Compute H = RIPEMD160(SHA256({0x02|0x03|0x04} | Px | Py?))
  *
  * Output:
  * - Array of 20-byte address hash values
@@ -92,6 +92,13 @@
 #else
 #define load_le32(v) (v)
 #define load_be32(v) bswap32(v)
+#endif
+
+/* Configuration -- maybe I shouldn't be passing this in preproc */
+#ifdef COMPRESSED_ADDRESS
+	__constant bool compressed_address = 1;
+#else
+	__constant bool compressed_address = 0;
 #endif
 
 /*
@@ -170,7 +177,7 @@ typedef struct {
 } bignum;
 
 __constant bn_word modulus[] = { MODULUS_BYTES };
-__constant bignum bn_zero;
+__constant bignum bn_zero = {};
 
 __constant bn_word mont_rr[BN_NWORDS] = { 0xe90a1, 0x7a2, 0x1, 0, };
 __constant bn_word mont_n0[2] = { 0xd2253531, 0xd838091d };
@@ -201,6 +208,38 @@ __constant bn_word mont_n0[2] = { 0xd2253531, 0xd838091d };
 	e(arg, 4) e(arg, 5) e(arg, 6) e(arg, 7)
 
 #define bn_iter(e) iter_8(e)
+
+
+/*
+ * Prototypes
+ */
+void bn_lshift1(bignum *bn);
+void bn_rshift(bignum *bn, int shift);
+void bn_rshift1(bignum *bn);
+void bn_rshift1_2(bignum *bna, bignum *bnb);
+int bn_ucmp_ge(bignum *a, bignum *b);
+int bn_ucmp_ge_c(bignum *a, __constant bn_word *b);
+void bn_neg(bignum *n);
+bn_word bn_uadd_words_seq(bn_word *r, bn_word *a, bn_word *b);
+bn_word bn_uadd_words_c_seq(bn_word *r, bn_word *a, __constant bn_word *b);
+bn_word bn_usub_words_seq(bn_word *r, bn_word *a, bn_word *b);
+bn_word bn_usub_words_c_seq(bn_word *r, bn_word *a, __constant bn_word *b);
+bn_word bn_uadd_words_vliw(bn_word *r, bn_word *a, bn_word *b);
+bn_word bn_uadd_words_c_vliw(bn_word *r, bn_word *a, __constant bn_word *b);
+bn_word bn_usub_words_vliw(bn_word *r, bn_word *a, bn_word *b);
+bn_word bn_usub_words_c_vliw(bn_word *r, bn_word *a, __constant bn_word *b);
+void bn_mod_add(bignum *r, bignum *a, bignum *b);
+void bn_mod_sub(bignum *r, bignum *a, bignum *b);
+void bn_mod_lshift1(bignum *bn);
+void bn_mul_mont(bignum *r, bignum *a, bignum *b);
+void bn_from_mont(bignum *rb, bignum *b);
+void bn_mod_inverse(bignum *r, bignum *n);
+void sha2_256_init(uint *out);
+void sha2_256_block(uint *out, uint *in);
+void ripemd160_init(uint *out);
+void ripemd160_block(uint *out, uint *in);
+void hash_ec_point(uint *hash_out, __global bn_word *xy, __global bn_word *zip);
+int hash160_ucmp_g(uint *a, __global uint *bound);
 
 
 /*
@@ -524,7 +563,7 @@ bn_mul_mont(bignum *r, bignum *a, bignum *b)
 	bn_word tea, teb, c, p, s, m;
 
 #if !defined(VERY_EXPENSIVE_BRANCHES)
-	int q;
+	uint q;
 #endif
 
 	c = 0;
@@ -660,7 +699,7 @@ void
 bn_mod_inverse(bignum *r, bignum *n)
 {
 	bignum a, b, x, y;
-	int shift;
+	uint shift;
 	bn_word xc, yc;
 	for (shift = 0; shift < BN_NWORDS; shift++) {
 		a.d[shift] = modulus[shift];
@@ -1234,7 +1273,7 @@ hash_ec_point(uint *hash_out, __global bn_word *xy, __global bn_word *zip)
 	bn_mul_mont(&c, &c, &zzi);  /* X / Z^2 */
 	bn_from_mont(&c, &c);
 
-	wh = 0x00000004;  /* POINT_CONVERSION_UNCOMPRESSED */
+	wh = compressed_address ? 0x00000002 : 0x00000004;  /* POINT_CONVERSION_[UN]COMPRESSED */
 
 #define hash_ec_point_inner_3(i)		\
 	wl = wh;				\
@@ -1253,12 +1292,30 @@ hash_ec_point(uint *hash_out, __global bn_word *xy, __global bn_word *zip)
 	bn_mul_mont(&c, &c, &zzi);  /* Y / Z^3 */
 	bn_from_mont(&c, &c);
 
-#define hash_ec_point_inner_5(i)			\
-	wl = wh;					\
-	wh = c.d[(BN_NWORDS - 1) - i];			\
-	hash1[BN_NWORDS + i] = (wl << 24) | (wh >> 8);
+	if (!compressed_address) {
+		#define hash_ec_point_inner_5(i)			\
+			wl = wh;					\
+			wh = c.d[(BN_NWORDS - 1) - i];			\
+			hash1[BN_NWORDS + i] = (wl << 24) | (wh >> 8);
 
-	bn_unroll(hash_ec_point_inner_5);
+		bn_unroll(hash_ec_point_inner_5);
+	} else {
+		if (bn_is_odd(c)) {
+			hash1[0] |= 0x01000000; /* 0x03 for odd y */
+		}
+
+		/*
+		 * Put in the last byte + SHA-2 padding.
+		 */
+		hash1[8] = wh << 24 | 0x800000;
+		hash1[9] = 0;
+		hash1[10] = 0;
+		hash1[11] = 0;
+		hash1[12] = 0;
+		hash1[13] = 0;
+		hash1[14] = 0;
+		hash1[15] = 33 * 8;
+	}
 
 	/*
 	 * Hash the first 64 bytes of the buffer
@@ -1266,26 +1323,28 @@ hash_ec_point(uint *hash_out, __global bn_word *xy, __global bn_word *zip)
 	sha2_256_init(hash2);
 	sha2_256_block(hash2, hash1);
 
-	/*
-	 * Hash the last byte of the buffer + SHA-2 padding
-	 */
-	hash1[0] = wh << 24 | 0x800000;
-	hash1[1] = 0;
-	hash1[2] = 0;
-	hash1[3] = 0;
-	hash1[4] = 0;
-	hash1[5] = 0;
-	hash1[6] = 0;
-	hash1[7] = 0;
-	hash1[8] = 0;
-	hash1[9] = 0;
-	hash1[10] = 0;
-	hash1[11] = 0;
-	hash1[12] = 0;
-	hash1[13] = 0;
-	hash1[14] = 0;
-	hash1[15] = 65 * 8;
-	sha2_256_block(hash2, hash1);
+	if (!compressed_address) {
+		/*
+		 * Hash the last byte of the buffer + SHA-2 padding
+		 */
+		hash1[0] = wh << 24 | 0x800000;
+		hash1[1] = 0;
+		hash1[2] = 0;
+		hash1[3] = 0;
+		hash1[4] = 0;
+		hash1[5] = 0;
+		hash1[6] = 0;
+		hash1[7] = 0;
+		hash1[8] = 0;
+		hash1[9] = 0;
+		hash1[10] = 0;
+		hash1[11] = 0;
+		hash1[12] = 0;
+		hash1[13] = 0;
+		hash1[14] = 0;
+		hash1[15] = 65 * 8;
+		sha2_256_block(hash2, hash1);
+	}
 
 	/*
 	 * Hash the SHA-2 result with RIPEMD160

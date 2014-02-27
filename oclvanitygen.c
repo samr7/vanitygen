@@ -57,11 +57,14 @@ usage(const char *name)
 "-i            Case-insensitive prefix search\n"
 "-k            Keep pattern and continue search after finding a match\n"
 "-1            Stop after first match\n"
+"-L            Generate litecoin address\n"
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
 "-X <version>  Generate address with the given version\n"
+"-F <format>   Generate address with the given format (pubkey, compressed)\n"
 "-e            Encrypt private keys, prompt for password\n"
 "-E <password> Encrypt private keys with <password> (UNSAFE)\n"
+"-P <pubkey>   Use split-key method with <pubkey> as base public key\n"
 "-p <platform> Select OpenCL platform\n"
 "-d <device>   Select OpenCL device\n"
 "-D <devstr>   Use OpenCL device, identified by device string\n"
@@ -119,11 +122,12 @@ main(int argc, char **argv)
 	int pattfpi[MAX_FILE];
 	int npattfp = 0;
 	int pattstdin = 0;
+	int compressed = 0;
 
 	int i;
 
 	while ((opt = getopt(argc, argv,
-			     "vqik1NTX:eE:p:P:d:w:t:g:b:VSh?f:o:s:D:")) != -1) {
+			     "vqik1LNTX:F:eE:p:P:d:w:t:g:b:VSh?f:o:s:D:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -140,6 +144,10 @@ main(int argc, char **argv)
 		case '1':
 			only_one = 1;
 			break;
+		case 'L':
+			addrtype = 48;
+			privtype = 176;
+			break;
 		case 'N':
 			addrtype = 52;
 			privtype = 180;
@@ -151,6 +159,16 @@ main(int argc, char **argv)
 		case 'X':
 			addrtype = atoi(optarg);
 			privtype = 128 + addrtype;
+			break;
+		case 'F':
+			if (!strcmp(optarg, "compressed"))
+				compressed = 1;
+			else
+			if (strcmp(optarg, "pubkey")) {
+				fprintf(stderr,
+					"Invalid format '%s'\n", optarg);
+				return 1;
+			}
 			break;
 		case 'e':
 			prompt_password = 1;
@@ -302,6 +320,17 @@ main(int argc, char **argv)
 			"WARNING: case insensitive mode incompatible with "
 			"regular expressions\n");
 
+	if (!seedfile)
+	{
+#if !defined(_WIN32)
+	 struct stat st;
+	 if (stat("/dev/random", &st) == 0)
+	 {
+	     seedfile = "/dev/random";
+	 }
+#endif
+	}
+
 	if (seedfile) {
 		opt = -1;
 #if !defined(_WIN32)
@@ -313,10 +342,10 @@ main(int argc, char **argv)
 #endif
 		opt = RAND_load_file(seedfile, opt);
 		if (!opt) {
-			fprintf(stderr, "Could not load RNG seed %s\n", optarg);
+			fprintf(stderr, "Could not load RNG seed '%s'\n", seedfile);
 			return 1;
 		}
-		if (verbose > 0) {
+		if (verbose > 1) {
 			fprintf(stderr,
 				"Read %d bytes from RNG seed file\n", opt);
 		}
@@ -330,6 +359,7 @@ main(int argc, char **argv)
 					    caseinsensitive);
 	}
 
+	vcp->vc_compressed = compressed;
 	vcp->vc_verbose = verbose;
 	vcp->vc_result_file = result_file;
 	vcp->vc_remove_on_match = remove_on_match;
