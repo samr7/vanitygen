@@ -1,72 +1,98 @@
-cmake_minimum_required(VERSION 2.6)
+CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
 
-project(vanitygen)
+PROJECT(vanitygen)
+SET(CMAKE_THREAD_PREFER_PTHREAD True)
+LIST(APPEND CMAKE_MODULE_PATH "${vanitygen_SOURCE_DIR}/cmake")
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+IF(NOT VG_OCL_SOURCE_PREFIX)
+	SET(VG_OCL_SOURCE_PREFIX ${vanitygen_SOURCE_DIR}/)
+ENDIF(NOT VG_OCL_SOURCE_PREFIX)
 
-set(DEBUG OFF)
-set(USE_OPENCL OFF)
+FIND_PACKAGE(OpenSSL REQUIRED)
+FIND_PACKAGE(Threads REQUIRED)
+FIND_PACKAGE(PCRE    REQUIRED)
+FIND_PACKAGE(CURL)
+FIND_PACKAGE(OpenCL)
 
-if (DEBUG)
-    set(OFLAGS "-ggdb3")
-else (DEBUG)
-    set(OFLAGS "-O4 -march=native")
-endif (DEBUG)
+INCLUDE_DIRECTORIES(${OPENSSL_INCLUDE_DIR})
+INCLUDE_DIRECTORIES(${PCRE_INCLUDE_DIR})
+INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR})
 
-set(CMAKE_C_FLAGS "${OFLAGS} -Wall")
+SET(DEBUG OFF)
+SET(USE_OPENCL OFF)
 
-find_package(Threads REQUIRED)
+IF(DEBUG)
+    SET(OFLAGS "-ggdb3")
+ELSE(DEBUG)
+    SET(OFLAGS "-O4 -march=native")
+ENDIF(DEBUG)
 
-set(LIBS
-    pcre
-    crypto
-    m
-    dl
-    z
-    ${CMAKE_THREAD_LIBS_INIT}
+SET(CMAKE_C_FLAGS "${OFLAGS} -Wall")
+
+SET(VANY_LIBS
+	${PCRE_LIBRARIES}
+	${OPENSSL_LIBRARIES}
+	m
+	${CMAKE_THREAD_LIBS_INIT}
 )
 
-add_executable(vanitygen
-    vanitygen.c
-    pattern.c
-    util.c
+ADD_EXECUTABLE(vanitygen
+	vanitygen.c
+	pattern.c
+	util.c
 )
-target_link_libraries(vanitygen
-    ${LIBS}
+TARGET_LINK_LIBRARIES(vanitygen
+	${VANY_LIBS}
 )
+INSTALL(TARGETS vanitygen RUNTIME DESTINATION bin)
 
-add_executable(keyconv
-    keyconv.c
-    util.c
+ADD_EXECUTABLE(keyconv
+	keyconv.c
+	util.c
 )
-target_link_libraries(keyconv
-    ${LIBS}
+TARGET_LINK_LIBRARIES(keyconv
+	${VANY_LIBS}
 )
+INSTALL(TARGETS keyconv RUNTIME DESTINATION bin)
 
-find_package(OpenCL)
-if (OPENCL_FOUND AND USE_OPENCL)
-    include_directories(${OPENCL_INCLUDE_DIRS})
+IF(OPENCL_FOUND)
+	INCLUDE_DIRECTORIES(${OPENCL_INCLUDE_DIRS})
 
-    add_executable(oclvanitygen
-        oclvanitygen.c
-        oclengine.c
-        pattern.c
-        util.c
-    )
-    target_link_libraries(oclvanitygen
-        ${LIBS}
-        ${OPENCL_LIBRARIES}
-    )
+	ADD_EXECUTABLE(oclvanitygen
+		oclvanitygen.c
+		oclengine.c
+		pattern.c
+		util.c
+	)
+	TARGET_LINK_LIBRARIES(oclvanitygen
+		${VANY_LIBS}
+	    ${OPENCL_LIBRARIES}
+	)
+	SET_TARGET_PROPERTIES(oclvanitygen PROPERTIES
+#	    VERSION
+        COMPILE_DEFINITIONS VG_OCL_SOURCE_PREFIX="${VG_OCL_SOURCE_PREFIX}/"
+	)
+	INSTALL(TARGETS oclvanitygen RUNTIME DESTINATION bin)
+	INSTALL(FILES calc_addrs.cl DESTINATION share/vanitygen/scripts)
 
-    add_executable(oclvanityminer
-        oclvanityminer.c
-        oclengine.c
-        pattern.c
-        util.c
-    )
-    target_link_libraries(oclvanityminer
-        ${LIBS}
-        ${OPENCL_LIBRARIES}
-        curl
-    )
-endif (OPENCL_FOUND AND USE_OPENCL)
+	IF(CURL_FOUND)
+		INCLUDE_DIRECTORIES(${CURL_INCLUDE_DIRS})
+		ADD_EXECUTABLE(oclvanityminer
+			oclvanityminer.c
+			oclengine.c
+			pattern.c
+			util.c
+		)
+		TARGET_LINK_LIBRARIES(oclvanityminer
+			${VANY_LIBS}
+			${OPENCL_LIBRARIES}
+			${CURL_LIBRARIES}
+		)
+		INSTALL(TARGETS oclvanityminer RUNTIME DESTINATION bin)
+	ENDIF(CURL_FOUND)
+ENDIF(OPENCL_FOUND)
+
+
+
+
+
