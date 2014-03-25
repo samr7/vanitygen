@@ -16,10 +16,12 @@
  * along with Vanitygen.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
-#include <math.h>
-#include <assert.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include <openssl/ec.h>
 #include <openssl/bn.h>
@@ -76,7 +78,8 @@ usage(const char *name)
 "-f <file>     File containing list of patterns, one per line\n"
 "              (Use \"-\" as the file name for stdin)\n"
 "-o <file>     Write pattern matches to <file>\n"
-"-s <file>     Seed random number generator from <file>\n",
+"-s <file>     Seed random number generator from <file>\n"
+"-O <file>     Save PID in <file>\n",
 version, name);
 }
 
@@ -107,10 +110,11 @@ main(int argc, char **argv)
 	int verify_mode = 0;
 	int safe_mode = 0;
 	vg_context_t *vcp = NULL;
-	vg_ocl_context_t *vocp = NULL;
-	EC_POINT *pubkey_base = NULL;
-	const char *result_file = NULL;
+	vg_ocl_context_t *vocp   = NULL;
+	EC_POINT *pubkey_base    = NULL;
+	const char *result_file  = NULL;
 	const char *key_password = NULL;
+	const char *pidfile      = NULL;
 	char *devstrs[MAX_DEVS];
 	int ndevstrs = 0;
 	int opened = 0;
@@ -123,7 +127,7 @@ main(int argc, char **argv)
 	int i;
 
 	while ((opt = getopt(argc, argv,
-			     "vqik1NTX:eE:p:P:d:w:t:g:b:VSh?f:o:s:D:")) != -1) {
+		                   "vqik1NTX:eE:p:P:d:w:t:g:b:VSh?f:o:O:s:D:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -282,7 +286,10 @@ main(int argc, char **argv)
 			}
 			seedfile = optarg;
 			break;
-		default:
+		case 'O':
+			pidfile = optarg;
+			break;
+		case 'h': case '?': default:
 			usage(argv[0]);
 			return 1;
 		}
@@ -320,6 +327,18 @@ main(int argc, char **argv)
 			fprintf(stderr,
 				"Read %d bytes from RNG seed file\n", opt);
 		}
+	}
+
+	if (pidfile) {
+		FILE *fd = fopen(pidfile, "wb");
+		if (!fd) {
+			fprintf(stderr, "Could not write pid, open file failure: %s\n", pidfile);
+			return 1;
+		}
+		char buf[8];
+		snprintf(buf, sizeof(buf), "%d", getpid());
+		fwrite(buf, strlen(buf), 1, fd);
+		fclose(fd);
 	}
 
 	if (regex) {
