@@ -249,10 +249,9 @@ out:
 int
 count_processors(void)
 {
-	int retstat;
 	int nCpu = 0;
 	size_t len = sizeof (nCpu);
-	retstat = sysctlbyname ("hw.logicalcpu", &nCpu, &len, NULL, 0);
+	const int retstat = sysctlbyname ("hw.logicalcpu", &nCpu, &len, NULL, 0);
 	if ( retstat < 0 ) {
 		perror("sysctl hw.logicalcpu failed: wrong retstat");
 		exit( EXIT_FAILURE );
