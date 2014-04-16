@@ -1,5 +1,5 @@
 LIBS=-lpcre -lcrypto -lm -lpthread
-CFLAGS=-ggdb -O3 -Wall
+CFLAGS=-ggdb -O3 -Wall -isystem/opt/local/include -D WHITH_PKCS5_PBKDF2_HMAC=1 -D MAVERICKS=1
 OBJS=vanitygen.o oclvanitygen.o oclvanityminer.o oclengine.o keyconv.o pattern.o util.o
 PROGS=vanitygen keyconv oclvanitygen oclvanityminer
 

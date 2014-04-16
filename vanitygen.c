@@ -29,6 +29,10 @@
 #include <openssl/bn.h>
 #include <openssl/rand.h>
 
+#if MAVERICKS
+#include <sys/sysctl.h>
+#endif
+
 #include "pattern.h"
 #include "util.h"
 
@@ -241,6 +245,27 @@ out:
 
 
 #if !defined(_WIN32)
+#if MAVERICKS
+int
+count_processors(void)
+{
+	int retstat;
+	int nCpu = 0;
+	size_t len = sizeof (nCpu);
+	retstat = sysctlbyname ("hw.logicalcpu", &nCpu, &len, NULL, 0);
+	if ( retstat < 0 ) {
+		perror("sysctl HW_NCPU failed");
+		exit( EXIT_FAILURE );
+	}
+	if (len != sizeof (nCpu)){
+		perror("sysctl HW_NCPU failed: wrong len");
+		exit( EXIT_FAILURE );
+	}
+	printf("CPU core count %d; len: %zu;\n", nCpu, len );
+
+	return nCpu;
+}
+#else
 int
 count_processors(void)
 {
@@ -259,6 +284,7 @@ count_processors(void)
 	fclose(fp);
 	return count;
 }
+#endif
 #endif
 
 int
