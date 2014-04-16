@@ -29,6 +29,10 @@
 #include <openssl/bn.h>
 #include <openssl/rand.h>
 
+#if MAVERICKS
+#include <sys/sysctl.h>
+#endif
+
 #include "pattern.h"
 #include "util.h"
 
@@ -241,6 +245,26 @@ out:
 
 
 #if !defined(_WIN32)
+#if MAVERICKS
+int
+count_processors(void)
+{
+	int nCpu = 0;
+	size_t len = sizeof (nCpu);
+	const int retstat = sysctlbyname ("hw.logicalcpu", &nCpu, &len, NULL, 0);
+	if ( retstat < 0 ) {
+		perror("sysctl hw.logicalcpu failed: wrong retstat");
+		exit( EXIT_FAILURE );
+	}
+	if (len != sizeof (nCpu)){
+		perror("sysctl hw.logicalcpu failed: wrong len");
+		exit( EXIT_FAILURE );
+	}
+	fprintf(stderr, "hw.logicalcpu: %d;\n", nCpu);
+
+	return nCpu;
+}
+#else
 int
 count_processors(void)
 {
@@ -259,6 +283,7 @@ count_processors(void)
 	fclose(fp);
 	return count;
 }
+#endif
 #endif
 
 int

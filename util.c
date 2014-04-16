@@ -350,7 +350,7 @@ vg_decode_privkey(const char *b58encoded, EC_KEY *pkey, int *addrtype)
 	return 1;
 }
 
-#if OPENSSL_VERSION_NUMBER < 0x10000000L
+#if WHITH_PKCS5_PBKDF2_HMAC || (OPENSSL_VERSION_NUMBER < 0x10000000L)
 /* The generic PBKDF2 function first appeared in OpenSSL 1.0 */
 /* ====================================================================
  * Copyright (c) 1999-2006 The OpenSSL Project.  All rights reserved.
