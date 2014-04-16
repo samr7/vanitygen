@@ -254,14 +254,14 @@ count_processors(void)
 	size_t len = sizeof (nCpu);
 	retstat = sysctlbyname ("hw.logicalcpu", &nCpu, &len, NULL, 0);
 	if ( retstat < 0 ) {
-		perror("sysctl HW_NCPU failed");
+		perror("sysctl hw.logicalcpu failed: wrong retstat");
 		exit( EXIT_FAILURE );
 	}
 	if (len != sizeof (nCpu)){
-		perror("sysctl HW_NCPU failed: wrong len");
+		perror("sysctl hw.logicalcpu failed: wrong len");
 		exit( EXIT_FAILURE );
 	}
-	printf("CPU core count %d; len: %zu;\n", nCpu, len );
+	printf("hw.logicalcpu: %d;\n", nCpu);
 
 	return nCpu;
 }
