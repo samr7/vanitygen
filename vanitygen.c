@@ -260,7 +260,7 @@ count_processors(void)
 		perror("sysctl hw.logicalcpu failed: wrong len");
 		exit( EXIT_FAILURE );
 	}
-	printf("hw.logicalcpu: %d;\n", nCpu);
+	fprintf(stderr, "hw.logicalcpu: %d;\n", nCpu);
 
 	return nCpu;
 }
