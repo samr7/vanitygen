@@ -20,7 +20,7 @@
 #include <string.h>
 #include <math.h>
 #include <assert.h>
-
+#include <sys/sysctl.h>
 #include <pthread.h>
 
 #include <openssl/sha.h>
@@ -240,7 +240,18 @@ out:
 }
 
 
-#if !defined(_WIN32)
+#ifdef __APPLE__
+int count_processors(void)
+{
+	int mib[2], count;
+        size_t len;
+        mib[0] = CTL_HW;
+        mib[1] = HW_NCPU;
+        len = sizeof(count);
+        sysctl(mib, 2, &count, &len, NULL, 0);
+	return count;
+}
+#elif !defined(_WIN32)
 int
 count_processors(void)
 {

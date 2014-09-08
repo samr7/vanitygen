@@ -57,6 +57,6 @@ git clone https://github.com/7m4gmh/vanitygen.git
 
 5) Build.
 cd vanitygen
-make -f Makefile.osx all
+make -f Makefile all
 
 
