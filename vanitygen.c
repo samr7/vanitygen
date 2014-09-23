@@ -398,7 +398,7 @@ main(int argc, char **argv)
 		case 'U':
 			addrtype = 130;
 			privtype = 224;
-			scriptaddrtype = addrtype;
+			scriptaddrtype = 30;
 			break;
 		case 'X':
 			addrtype = atoi(optarg);
