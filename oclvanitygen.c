@@ -314,6 +314,17 @@ main(int argc, char **argv)
 			"WARNING: case insensitive mode incompatible with "
 			"regular expressions\n");
 
+	if (!seedfile)
+	{
+#if !defined(_WIN32)
+	 struct stat st;
+	 if (stat("/dev/random", &st) == 0)
+	 {
+	     seedfile = "/dev/random";
+	 }
+#endif
+	}
+
 	if (seedfile) {
 		opt = -1;
 #if !defined(_WIN32)
@@ -325,10 +336,10 @@ main(int argc, char **argv)
 #endif
 		opt = RAND_load_file(seedfile, opt);
 		if (!opt) {
-			fprintf(stderr, "Could not load RNG seed %s\n", optarg);
+			fprintf(stderr, "Could not load RNG seed '%s'\n", seedfile);
 			return 1;
 		}
-		if (verbose > 0) {
+		if (verbose > 1) {
 			fprintf(stderr,
 				"Read %d bytes from RNG seed file\n", opt);
 		}
