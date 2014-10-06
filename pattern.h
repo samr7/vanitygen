@@ -88,6 +88,7 @@ enum vg_format {
 
 /* Application-level context, incl. parameters and global pattern store */
 struct _vg_context_s {
+        int			vc_compressed;
 	int			vc_addrtype;
 	int			vc_privtype;
 	unsigned long		vc_npatterns;
