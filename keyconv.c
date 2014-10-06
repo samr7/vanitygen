@@ -31,6 +31,7 @@ usage(const char *progname)
 "-e            Encrypt output key, prompt for password\n"
 "-E <password> Encrypt output key with <password> (UNSAFE)\n"
 "-c <key>      Combine private key parts to make complete private key\n"
+"-d            Decrypt output key, prompt for password\n"
 "-v            Verbose output\n",
 		version, progname);
 }
@@ -52,10 +53,11 @@ main(int argc, char **argv)
 	int pass_prompt = 0;
 	int verbose = 0;
 	int generate = 0;
+	int decrypt = 0;
 	int opt;
 	int res;
 
-	while ((opt = getopt(argc, argv, "8E:ec:vG")) != -1) {
+	while ((opt = getopt(argc, argv, "8E:ec:vGd")) != -1) {
 		switch (opt) {
 		case '8':
 			pkcs8 = 1;
@@ -85,6 +87,9 @@ main(int argc, char **argv)
 			break;
 		case 'G':
 			generate = 1;
+			break;
+		case 'd':
+			decrypt = 1;
 			break;
 		default:
 			usage(argv[0]);
@@ -123,13 +128,15 @@ main(int argc, char **argv)
 		key_in = argv[optind];
 	}
 
-	res = vg_decode_privkey_any(pkey, &privtype, key_in, NULL);
-	if (res < 0) {
+
+	if (decrypt) {
 		if (EVP_read_pw_string(pwbuf, sizeof(pwbuf),
 				       "Enter import password:", 0) ||
-		    !vg_decode_privkey_any(pkey, &privtype, key_in, pwbuf))
+		    !vg_protect_decode_privkey(pkey, &privtype, key_in, pwbuf))
 			return 1;
-	}
+		res = 1;
+	} else 
+		res = vg_decode_privkey_any(pkey, &privtype, key_in, NULL);
 
 	if (!res) {
 		fprintf(stderr, "ERROR: Unrecognized key format\n");
