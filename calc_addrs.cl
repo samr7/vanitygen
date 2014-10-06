@@ -67,7 +67,7 @@
  * Steps:
  * - Compute Px = Pxj * (1/Pz)^2
  * - Compute Py = Pyj * (1/Pz)^3
- * - Compute H = RIPEMD160(SHA256(0x04 | Px | Py))
+ * - Compute H = RIPEMD160(SHA256({0x02|0x03|0x04} | Px | Py?))
  *
  * Output:
  * - Array of 20-byte address hash values
@@ -92,6 +92,13 @@
 #else
 #define load_le32(v) (v)
 #define load_be32(v) bswap32(v)
+#endif
+
+/* Configuration -- maybe I shouldn't be passing this in preproc */
+#ifdef COMPRESSED_ADDRESS
+	__constant bool compressed_address = 1;
+#else
+	__constant bool compressed_address = 0;
 #endif
 
 /*
@@ -1234,7 +1241,7 @@ hash_ec_point(uint *hash_out, __global bn_word *xy, __global bn_word *zip)
 	bn_mul_mont(&c, &c, &zzi);  /* X / Z^2 */
 	bn_from_mont(&c, &c);
 
-	wh = 0x00000004;  /* POINT_CONVERSION_UNCOMPRESSED */
+	wh = compressed_address ? 0x00000002 : 0x00000004;  /* POINT_CONVERSION_[UN]COMPRESSED */
 
 #define hash_ec_point_inner_3(i)		\
 	wl = wh;				\
@@ -1253,12 +1260,30 @@ hash_ec_point(uint *hash_out, __global bn_word *xy, __global bn_word *zip)
 	bn_mul_mont(&c, &c, &zzi);  /* Y / Z^3 */
 	bn_from_mont(&c, &c);
 
-#define hash_ec_point_inner_5(i)			\
-	wl = wh;					\
-	wh = c.d[(BN_NWORDS - 1) - i];			\
-	hash1[BN_NWORDS + i] = (wl << 24) | (wh >> 8);
+	if (!compressed_address) {
+		#define hash_ec_point_inner_5(i)			\
+			wl = wh;					\
+			wh = c.d[(BN_NWORDS - 1) - i];			\
+			hash1[BN_NWORDS + i] = (wl << 24) | (wh >> 8);
 
-	bn_unroll(hash_ec_point_inner_5);
+		bn_unroll(hash_ec_point_inner_5);
+	} else {
+		if (bn_is_odd(c)) {
+			hash1[0] |= 0x01000000; /* 0x03 for odd y */
+		}
+
+		/*
+		 * Put in the last byte + SHA-2 padding.
+		 */
+		hash1[8] = wh << 24 | 0x800000;
+		hash1[9] = 0;
+		hash1[10] = 0;
+		hash1[11] = 0;
+		hash1[12] = 0;
+		hash1[13] = 0;
+		hash1[14] = 0;
+		hash1[15] = 33 * 8;
+	}
 
 	/*
 	 * Hash the first 64 bytes of the buffer
@@ -1266,26 +1291,28 @@ hash_ec_point(uint *hash_out, __global bn_word *xy, __global bn_word *zip)
 	sha2_256_init(hash2);
 	sha2_256_block(hash2, hash1);
 
-	/*
-	 * Hash the last byte of the buffer + SHA-2 padding
-	 */
-	hash1[0] = wh << 24 | 0x800000;
-	hash1[1] = 0;
-	hash1[2] = 0;
-	hash1[3] = 0;
-	hash1[4] = 0;
-	hash1[5] = 0;
-	hash1[6] = 0;
-	hash1[7] = 0;
-	hash1[8] = 0;
-	hash1[9] = 0;
-	hash1[10] = 0;
-	hash1[11] = 0;
-	hash1[12] = 0;
-	hash1[13] = 0;
-	hash1[14] = 0;
-	hash1[15] = 65 * 8;
-	sha2_256_block(hash2, hash1);
+	if (!compressed_address) {
+		/*
+		 * Hash the last byte of the buffer + SHA-2 padding
+		 */
+		hash1[0] = wh << 24 | 0x800000;
+		hash1[1] = 0;
+		hash1[2] = 0;
+		hash1[3] = 0;
+		hash1[4] = 0;
+		hash1[5] = 0;
+		hash1[6] = 0;
+		hash1[7] = 0;
+		hash1[8] = 0;
+		hash1[9] = 0;
+		hash1[10] = 0;
+		hash1[11] = 0;
+		hash1[12] = 0;
+		hash1[13] = 0;
+		hash1[14] = 0;
+		hash1[15] = 65 * 8;
+		sha2_256_block(hash2, hash1);
+	}
 
 	/*
 	 * Hash the SHA-2 result with RIPEMD160
