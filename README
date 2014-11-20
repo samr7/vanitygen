@@ -46,6 +46,13 @@ Pattern: 1Love
 Address: 1LoveRg5t2NCDLUZh6Q8ixv74M5YGVxXaN
 Privkey: 5JLUmjZiirgziDmWmNprPsNx8DYwfecUNk1FQXmDPaoKB36fX1o
 
+example for a peercoin address generation is:
+$ ./vanitygen -G PFuzzy
+Difficulty: 264104224
+Pattern: PFuzzy                                                                
+Address: PFuzzyiHvUuwh6VbUTy2PXGqDtFA3kUcZQ
+Privkey: 78yCPnuXLe8cD2PUjjy1iq23WbSPhw3cp1aLiGHZz9Df9uZGKgg
+
 Currently, it is difficult to import the private key into bitcoin.  
 Sipa's showwallet branch has a new command called "importprivkey" that 
 accepts the base-58 encoded private key.  Vanitygen has been tested to 
