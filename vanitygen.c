@@ -308,6 +308,7 @@ usage(const char *name)
 "-n            Simulate\n"
 "-r            Use regular expression match instead of prefix\n"
 "              (Feasibility of expression is not checked)\n"
+"-c            Use compressed address\n"
 "-i            Case-insensitive prefix search\n"
 "-k            Keep pattern and continue search after finding a match\n"
 "-1            Stop after first match\n"
@@ -364,7 +365,7 @@ main(int argc, char **argv)
 
 	int i;
 
-	while ((opt = getopt(argc, argv, "Lvqnrik1eE:P:NGTX:F:t:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "Lvqnrcik1eE:P:NGTX:F:t:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'c':
 		        compressed = 1;
