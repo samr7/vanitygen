@@ -314,6 +314,7 @@ usage(const char *name)
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
 "-X <version>  Generate address with the given version\n"
+"-Y <version>  Specify private key version (-X provides public key)\n"
 "-F <format>   Generate address with the given format (pubkey or script)\n"
 "-P <pubkey>   Specify base public key for piecewise key generation\n"
 "-e            Encrypt private keys, prompt for password\n"
@@ -361,7 +362,7 @@ main(int argc, char **argv)
 
 	int i;
 
-	while ((opt = getopt(argc, argv, "vqnrik1eE:P:NTX:F:t:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqnrik1eE:P:NTX:Y:F:t:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -398,6 +399,10 @@ main(int argc, char **argv)
 			addrtype = atoi(optarg);
 			privtype = 128 + addrtype;
 			scriptaddrtype = addrtype;
+			break;
+		case 'Y':
+			/* Overrides privtype of 'X' but leaves all else intact */
+			privtype = atoi(optarg);
 			break;
 		case 'F':
 			if (!strcmp(optarg, "script"))

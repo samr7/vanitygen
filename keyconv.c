@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <math.h>
 #include <assert.h>
 
@@ -31,6 +32,8 @@ usage(const char *progname)
 "-e            Encrypt output key, prompt for password\n"
 "-E <password> Encrypt output key with <password> (UNSAFE)\n"
 "-c <key>      Combine private key parts to make complete private key\n"
+"-X <version>  Public key version (for altcoins)\n"
+"-Y <version>  Private key version (-X provides public key)\n"
 "-v            Verbose output\n",
 		version, progname);
 }
@@ -47,7 +50,11 @@ main(int argc, char **argv)
 	const char *key2_in = NULL;
 	EC_KEY *pkey;
 	int parameter_group = -1;
-	int privtype, addrtype;
+	int addrtype = 0;
+	int privtype = 128;
+	int addrtype_opt = addrtype;
+	int privtype_opt = privtype;
+	int addrtype_override = 0;
 	int pkcs8 = 0;
 	int pass_prompt = 0;
 	int verbose = 0;
@@ -55,7 +62,7 @@ main(int argc, char **argv)
 	int opt;
 	int res;
 
-	while ((opt = getopt(argc, argv, "8E:ec:vG")) != -1) {
+	while ((opt = getopt(argc, argv, "8E:ec:vGX:Y:")) != -1) {
 		switch (opt) {
 		case '8':
 			pkcs8 = 1;
@@ -86,20 +93,33 @@ main(int argc, char **argv)
 		case 'G':
 			generate = 1;
 			break;
+		case 'X':
+			addrtype_opt = atoi(optarg);
+			privtype_opt = addrtype + 128;
+			addrtype_override = 1;
+			break;
+		case 'Y':
+			privtype_opt = atoi(optarg);
+			addrtype_override = 1;
+			break;
 		default:
 			usage(argv[0]);
 			return 1;
 		}
 	}
 
+	if (addrtype_override)
+	{
+		addrtype = addrtype_opt;
+		privtype = privtype_opt;
+	}
+	
 	OpenSSL_add_all_algorithms();
 
 	pkey = EC_KEY_new_by_curve_name(NID_secp256k1);
 
 	if (generate) {
 		unsigned char *pend = (unsigned char *) pbuf;
-		addrtype = 0;
-		privtype = 128;
 		EC_KEY_generate_key(pkey);
 		res = i2o_ECPublicKey(pkey, &pend);
 		fprintf(stderr, "Pubkey (hex): ");
@@ -181,12 +201,12 @@ main(int argc, char **argv)
 			fprintf(stderr, "WARNING: Using weak password\n");
 	}
 
-	switch (privtype) {
-	case 128: addrtype = 0; break;
-	case 239: addrtype = 111; break;
-	default:  addrtype = 0; break;
+	if (addrtype_override)
+	{
+		addrtype = addrtype_opt;
+		privtype = privtype_opt;
 	}
-
+	
 	if (verbose) {
 		unsigned char *pend = (unsigned char *) pbuf;
 		res = i2o_ECPublicKey(pkey, &pend);
