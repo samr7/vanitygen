@@ -322,7 +322,8 @@ usage(const char *name)
 "-f <file>     File containing list of patterns, one per line\n"
 "              (Use \"-\" as the file name for stdin)\n"
 "-o <file>     Write pattern matches to <file>\n"
-"-s <file>     Seed random number generator from <file>\n",
+"-s <file>     Seed random number generator from <file>\n"
+"-M			   Write Data direct to MySQL Server",
 version, name);
 }
 
@@ -351,6 +352,7 @@ main(int argc, char **argv)
 	char **patterns;
 	int npatterns = 0;
 	int nthreads = 0;
+	int write_mysql = 0;
 	vg_context_t *vcp = NULL;
 	EC_POINT *pubkey_base = NULL;
 
@@ -361,7 +363,7 @@ main(int argc, char **argv)
 
 	int i;
 
-	while ((opt = getopt(argc, argv, "vqnrik1eE:P:NTX:F:t:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqnrik1eE:P:NTX:F:t:h?f:o:s:M")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -484,6 +486,9 @@ main(int argc, char **argv)
 			}
 			seedfile = optarg;
 			break;
+		case 'M':
+			write_mysql = 1;
+			break;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -551,6 +556,7 @@ main(int argc, char **argv)
 	vcp->vc_format = format;
 	vcp->vc_pubkeytype = pubkeytype;
 	vcp->vc_pubkey_base = pubkey_base;
+	vcp->vc_use_mysql = write_mysql;
 
 	vcp->vc_output_match = vg_output_match_console;
 	vcp->vc_output_timing = vg_output_timing_console;

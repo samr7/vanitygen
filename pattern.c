@@ -600,6 +600,12 @@ vg_output_match_console(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 			fclose(fp);
 		}
 	}
+	
+	if (vcp->vc_use_mysql) {
+		printf("INSERT INTO `keys` ('address','privkey') VALUES ('%s','%s')",
+		       addr_buf, privkey_buf);
+	}
+	
 	if (free_ppnt)
 		EC_POINT_free(ppnt);
 }
