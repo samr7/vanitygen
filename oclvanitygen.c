@@ -123,7 +123,7 @@ main(int argc, char **argv)
 	int i;
 
 	while ((opt = getopt(argc, argv,
-			     "vqik1NTX:eE:p:P:d:w:t:g:b:VSh?f:o:s:D:")) != -1) {
+			     "vqik1NTX:Y:eE:p:P:d:w:t:g:b:VSh?f:o:s:D:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -151,6 +151,10 @@ main(int argc, char **argv)
 		case 'X':
 			addrtype = atoi(optarg);
 			privtype = 128 + addrtype;
+			break;
+		case 'Y':
+			/* Overrides privtype of 'X' but leaves all else intact */
+			privtype = atoi(optarg);
 			break;
 		case 'e':
 			prompt_password = 1;
