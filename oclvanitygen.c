@@ -59,8 +59,6 @@ usage(const char *name)
 "-1            Stop after first match\n"
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
-"-U            Generate unobtanium address\n"
-"-u            Generate unitus address\n"
 "-X <version>  Generate address with the given version\n"
 "-e            Encrypt private keys, prompt for password\n"
 "-E <password> Encrypt private keys with <password> (UNSAFE)\n"
@@ -125,7 +123,7 @@ main(int argc, char **argv)
 	int i;
 
 	while ((opt = getopt(argc, argv,
-			     "vqik1NTUuX:eE:p:P:d:w:t:g:b:VSh?f:o:s:D:")) != -1) {
+			     "vqik1NTX:Y:eE:p:P:d:w:t:g:b:VSh?f:o:s:D:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -150,17 +148,13 @@ main(int argc, char **argv)
 			addrtype = 111;
 			privtype = 239;
 			break;
-		case 'U':
-			addrtype = 130;
-			privtype = 224;
-			break;
-		case 'u':
-			addrtype = 68;
-			privtype = 132;
-			break;
 		case 'X':
 			addrtype = atoi(optarg);
 			privtype = 128 + addrtype;
+			break;
+		case 'Y':
+			/* Overrides privtype of 'X' but leaves all else intact */
+			privtype = atoi(optarg);
 			break;
 		case 'e':
 			prompt_password = 1;

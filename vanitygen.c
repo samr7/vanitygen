@@ -313,9 +313,8 @@ usage(const char *name)
 "-1            Stop after first match\n"
 "-N            Generate namecoin address\n"
 "-T            Generate bitcoin testnet address\n"
-"-U            Generate unobtanium address\n"
-"-u            Generate unitus address\n"
 "-X <version>  Generate address with the given version\n"
+"-Y <version>  Specify private key version (-X provides public key)\n"
 "-F <format>   Generate address with the given format (pubkey or script)\n"
 "-P <pubkey>   Specify base public key for piecewise key generation\n"
 "-e            Encrypt private keys, prompt for password\n"
@@ -363,7 +362,7 @@ main(int argc, char **argv)
 
 	int i;
 
-	while ((opt = getopt(argc, argv, "vqnrik1eE:P:NTUuX:F:t:h?f:o:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "vqnrik1eE:P:NTX:Y:F:t:h?f:o:s:")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = 2;
@@ -396,20 +395,14 @@ main(int argc, char **argv)
 			privtype = 239;
 			scriptaddrtype = 196;
 			break;
-		case 'U':
-			addrtype = 130;
-			privtype = 224;
-			scriptaddrtype = 30;
-			break;
-		case 'u':
-			addrtype = 68;
-			privtype = 132;
-			scriptaddrtype = 10;
-			break;
 		case 'X':
 			addrtype = atoi(optarg);
 			privtype = 128 + addrtype;
 			scriptaddrtype = addrtype;
+			break;
+		case 'Y':
+			/* Overrides privtype of 'X' but leaves all else intact */
+			privtype = atoi(optarg);
 			break;
 		case 'F':
 			if (!strcmp(optarg, "script"))
