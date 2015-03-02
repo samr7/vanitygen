@@ -456,7 +456,7 @@ vg_ocl_get_quirks(vg_ocl_context_t *vocp)
 	default:
 		break;
 	}
-	return quirks;
+	return (quirks & ~VG_OCL_AMD_BFI_INT);
 }
 
 static int
