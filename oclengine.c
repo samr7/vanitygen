@@ -677,8 +677,9 @@ vg_ocl_load_program(vg_context_t *vcp, vg_ocl_context_t *vocp,
 
 	vg_ocl_hash_program(vocp, opts, buf, len, prog_hash);
 	snprintf(bin_name, sizeof(bin_name),
-		 "%02x%02x%02x%02x%02x%02x%02x%02x"
+		 "%s/%02x%02x%02x%02x%02x%02x%02x%02x"
 		 "%02x%02x%02x%02x%02x%02x%02x%02x.oclbin",
+		 P_tmpdir, 
 		 prog_hash[0], prog_hash[1], prog_hash[2], prog_hash[3],
 		 prog_hash[4], prog_hash[5], prog_hash[6], prog_hash[7],
 		 prog_hash[8], prog_hash[9], prog_hash[10], prog_hash[11],
@@ -940,7 +941,7 @@ vg_ocl_init(vg_context_t *vcp, vg_ocl_context_t *vocp, cl_device_id did,
 		end += snprintf(optbuf + end, sizeof(optbuf) - end,
 				"-cl-nv-verbose ");
 
-	if (!vg_ocl_load_program(vcp, vocp, "calc_addrs.cl", optbuf))
+	if (!vg_ocl_load_program(vcp, vocp, "/usr/lib/oclvanitygen/calc_addrs.cl", optbuf))
 		return 0;
 	return 1;
 }
