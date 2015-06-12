@@ -31,3 +31,32 @@ After dependencies have been prepared, open a Visual Studio command
 prompt window, and run:
 
 nmake /fMakefile.Win32 vanitygen.exe oclvanitygen.exe
+
+
+Mac OS X:
+
+Prerequisites:
+OpenSSL (0.9.8 is okay, but consider to use 1.0.1 or higher for better performance.)
+pcre/pcre++
+
+It's easy to use "homebrew" tool chains for install OpenSSL and pcre/pcre++.
+If not installed, take the following steps.
+
+1) Install homebeww
+ruby -e "$(curl -fsSL https://raw.github.com/mxcl/homebrew/go/install)"
+
+2) Install pcre and openssl
+brew install pcre pcre++ openssl
+brew link --force openssl
+
+3) Edit ~/.bash_profile to add PATH environment at the end of the file.
+export PATH=/usr/local/bin:$PATH
+
+4) Fetch the source.
+git clone https://github.com/7m4gmh/vanitygen.git
+
+5) Build.
+cd vanitygen
+make -f Makefile all
+
+
