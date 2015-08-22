@@ -97,35 +97,6 @@ _avl_rotate_ll(avl_root_t *rootp, avl_item_t *itemp)
 }
 
 static INLINE void
-_avl_rotate_lr(avl_root_t *rootp, avl_item_t *itemp)
-{
-	avl_item_t *rcp, *rlcp;
-	rcp = itemp->ai_left;
-	rlcp = rcp->ai_right;
-	if (itemp->ai_up) {
-		if (itemp == itemp->ai_up->ai_left) {
-			itemp->ai_up->ai_left = rlcp;
-		} else {
-			assert(itemp == itemp->ai_up->ai_right);
-			itemp->ai_up->ai_right = rlcp;
-		}
-	} else {
-		rootp->ar_root = rlcp;
-	}
-	rlcp->ai_up = itemp->ai_up;
-	rcp->ai_right = rlcp->ai_left;
-	if (rcp->ai_right)
-		rcp->ai_right->ai_up = rcp;
-	itemp->ai_left = rlcp->ai_right;
-	if (itemp->ai_left)
-		itemp->ai_left->ai_up = itemp;
-	rlcp->ai_left = rcp;
-	rlcp->ai_right = itemp;
-	rcp->ai_up = rlcp;
-	itemp->ai_up = rlcp;
-}
-
-static INLINE void
 _avl_rotate_rr(avl_root_t *rootp, avl_item_t *itemp)
 {
 	avl_item_t *tmp;
@@ -150,32 +121,17 @@ _avl_rotate_rr(avl_root_t *rootp, avl_item_t *itemp)
 }
 
 static INLINE void
+_avl_rotate_lr(avl_root_t *rootp, avl_item_t *itemp)
+{
+	_avl_rotate_rr(itemp->left);
+	_avl_rotate_ll(itemp);
+}
+
+static INLINE void
 _avl_rotate_rl(avl_root_t *rootp, avl_item_t *itemp)
 {
-	avl_item_t *rcp, *rlcp;
-	rcp = itemp->ai_right;
-	rlcp = rcp->ai_left;
-	if (itemp->ai_up) {
-		if (itemp == itemp->ai_up->ai_right) {
-			itemp->ai_up->ai_right = rlcp;
-		} else {
-			assert(itemp == itemp->ai_up->ai_left);
-			itemp->ai_up->ai_left = rlcp;
-		}
-	} else {
-		rootp->ar_root = rlcp;
-	}
-	rlcp->ai_up = itemp->ai_up;
-	rcp->ai_left = rlcp->ai_right;
-	if (rcp->ai_left)
-		rcp->ai_left->ai_up = rcp;
-	itemp->ai_right = rlcp->ai_left;
-	if (itemp->ai_right)
-		itemp->ai_right->ai_up = itemp;
-	rlcp->ai_right = rcp;
-	rlcp->ai_left = itemp;
-	rcp->ai_up = rlcp;
-	itemp->ai_up = rlcp;
+	_avl_rotate_ll(itemp->right);
+	_avl_rotate_rr(itemp);
 }
 
 static void
