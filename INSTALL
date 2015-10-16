@@ -1,5 +1,9 @@
 Linux/OSX with GNU make:
-make
+$ git clone https://github.com/samr7/vanitygen.git
+$ cd vanitygen
+$ sudo apt-get install build-essential libtool autotools-dev autoconf libssl-dev libdb-dev libdb++-dev libboost-all-dev libpcre3 libpcre3-dev automake
+$ make
+
 
 Windows:
 Tools: Microsoft Visual Studio 2010, Visual C++
