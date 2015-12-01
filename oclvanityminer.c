@@ -319,7 +319,7 @@ server_workitem_new(server_request_t *reqp,
 	wip->addrtype = addrtype;
 	wip->difficulty = difficulty;
 	wip->reward = reward;
-	wip->value = (reward * 1000000000.0) / difficulty;
+	wip->value = (reward * 1000000.0 * 3600.0) / difficulty;
 
 	return wip;
 }
@@ -554,13 +554,13 @@ dump_work(avl_root_t *work)
 		     wip != NULL;
 		     wip = workitem_avl_next(wip)) {
 			printf("Pattern: \"%s\" Reward: %f "
-			       "Value: %f BTC/Gkey\n",
+			       "Value: %f BTC/MkeyHr\n",
 			       wip->pattern,
 			       wip->reward,
 			       wip->value);
 		}
 		if (pbatch->nitems > 1)
-			printf("Batch of %d, total value: %f BTC/Gkey\n",
+			printf("Batch of %d, total value: %f BTC/MkeyHr\n",
 			       pbatch->nitems, pbatch->total_value);
 	}
 }
@@ -802,7 +802,6 @@ main(int argc, char **argv)
 	int res;
 	int thread_started = 0;
 	pubkeybatch_t *active_pkb = NULL;
-	float active_pkb_value = 0;
 
 	server_context_t *scp = NULL;
 	pubkeybatch_t *pkb;
@@ -1017,14 +1016,13 @@ main(int argc, char **argv)
 		} else if (!active_pkb) {
 			workitem_t *wip;
 			was_sleeping = 0;
-			active_pkb_value = 0;
 			vcp->vc_pubkey_base = pkb->pubkey;
 			for (wip = workitem_avl_first(&pkb->items);
 			     wip != NULL;
 			     wip = workitem_avl_next(wip)) {
 				fprintf(stderr,
 					"Searching for pattern: \"%s\" "
-					"Reward: %f Value: %f BTC/Gkey\n",
+					"Reward: %f Value: %f BTC/MkeyHr\n",
 					wip->pattern,
 					wip->reward,
 					wip->value);
@@ -1035,16 +1033,9 @@ main(int argc, char **argv)
 					fprintf(stderr,
 					   "WARNING: could not add pattern\n");
 				}
-				else {
-					active_pkb_value += wip->value;
-				}
-				
 				assert(vcp->vc_npatterns);
 			}
 
-			fprintf(stderr, 
-				"\nTotal value for current work: %f BTC/Gkey\n", 
-				active_pkb_value);
 			res = vg_context_start_threads(vcp);
 			if (res)
 				return 1;
