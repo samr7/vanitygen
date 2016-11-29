@@ -76,7 +76,8 @@ usage(const char *name)
 "-f <file>     File containing list of patterns, one per line\n"
 "              (Use \"-\" as the file name for stdin)\n"
 "-o <file>     Write pattern matches to <file>\n"
-"-s <file>     Seed random number generator from <file>\n",
+"-s <file>     Seed random number generator from <file>\n"
+"-S            Safe mode\n",
 version, name);
 }
 
