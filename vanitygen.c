@@ -244,6 +244,12 @@ out:
 int
 count_processors(void)
 {
+#if defined(__APPLE__)
+    int count;
+    size_t count_len = sizeof(count);
+    if (sysctlbyname("hw.logicalcpu", &count, &count_len, NULL, 0) != 0 || count_len != sizeof(count))
+        count = -1;
+#else
 	FILE *fp;
 	char buf[512];
 	int count = 0;
@@ -257,6 +263,7 @@ count_processors(void)
 			count += 1;
 	}
 	fclose(fp);
+#endif
 	return count;
 }
 #endif
