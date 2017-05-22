@@ -528,9 +528,14 @@ vg_output_match_console(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 	}
 
 	assert(EC_KEY_check_key(pkey));
-	vg_encode_address(ppnt,
-			  EC_KEY_get0_group(pkey),
-			  vcp->vc_pubkeytype, addr_buf);
+	if (vcp->vc_compressed)
+		vg_encode_address_compressed(ppnt,
+				  EC_KEY_get0_group(pkey),
+				  vcp->vc_pubkeytype, addr_buf);
+	else
+		vg_encode_address(ppnt,
+				  EC_KEY_get0_group(pkey),
+				  vcp->vc_pubkeytype, addr_buf);
 	if (isscript)
 		vg_encode_script_address(ppnt,
 					 EC_KEY_get0_group(pkey),
@@ -550,7 +555,10 @@ vg_output_match_console(vg_context_t *vcp, EC_KEY *pkey, const char *pattern)
 		}
 	}
 	if (!vcp->vc_key_protect_pass) {
-		vg_encode_privkey(pkey, vcp->vc_privtype, privkey_buf);
+		if (vcp->vc_compressed)
+			vg_encode_privkey_compressed(pkey, vcp->vc_privtype, privkey_buf);
+		else
+			vg_encode_privkey(pkey, vcp->vc_privtype, privkey_buf);
 	}
 
 	if (!vcp->vc_result_file || (vcp->vc_verbose > 0)) {
@@ -1400,6 +1408,10 @@ vg_prefix_context_add_patterns(vg_context_t *vcp,
 		case 52:
 			ats = "namecoin";
 			bw = "\"M\" or \"N\"";
+			break;
+		case 55:
+			ats = "peercoin";
+			bw = "\"P\"";
 			break;
 		default:
 			break;
