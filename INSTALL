@@ -1,6 +1,14 @@
 Linux/OSX with GNU make:
 make
 
+MacOSX:
+You need to have `openssl` and `pcre` libraries installed:
+`$ brew install openssl && brew install pcre`
+Now, use Makefile.macosx to `make`:
+`$ make -f Makefile.macosx`
+
+(It has two options appended to CFLAGS: `-I/usr/local/opt/openssl/include -L/usr/local/opt/openssl/lib`)
+
 Windows:
 Tools: Microsoft Visual Studio 2010, Visual C++
 Prerequisites:
