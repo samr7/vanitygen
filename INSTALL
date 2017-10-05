@@ -1,4 +1,5 @@
 Linux/OSX with GNU make:
+sudo apt-get install libssl1.0-dev
 make
 
 Windows:
