@@ -1,0 +1,9 @@
+#!/bin/bash
+set -e
+
+## for archlinux
+## detail see https://github.com/samr7/vanitygen/issues/106
+if [ -f /etc/pacman.conf ]; then
+  sed -r -i "s,(CFLAGS=.*),\1 -I/usr/include/openssl-1.0," Makefile
+  sed -r -i "s,(LIBS=.*),\1 -L/usr/lib/openssl-1.0," Makefile
+fi
