@@ -240,7 +240,29 @@ out:
 }
 
 
-#if !defined(_WIN32)
+#if defined(__APPLE__)
+int
+count_processors(void)
+{
+       FILE *fp;
+       char buf[512];
+       int count = 0;
+
+        fp = popen("/usr/sbin/sysctl -n hw.ncpu", "r");
+        while (fgets(buf, sizeof(buf), fp) != NULL) {
+          count = atoi (buf);
+        }
+        pclose(fp);
+
+        if (!fp) {
+          return -1;
+        } else {
+          return count;
+        }
+}
+#endif
+
+#if defined(__linux__)
 int
 count_processors(void)
 {
