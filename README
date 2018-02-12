@@ -1,5 +1,5 @@
-I'd like to present a standalone command line vanity address generator 
-called vanitygen.
+I'd like to present a standalone command line cryptocurrency vanity
+address generator called vanitygen.
 
 There are plenty of quality tools to do this right now already.  So why 
 use vanitygen?  The main reason is that it is fast, more than an order 
