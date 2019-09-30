@@ -1,8 +1,6 @@
 language: cpp
-before_install:
-  - sudo apt update
-  - sudo apt install -y libssl-dev
+os: osx
 jobs:
   include:
     - stage: test
-      script: echo $(nproc --all) && make -j $(nproc) && ./vanitygen 1foxxo
+      script: make && ./vanitygen 1foxxo
