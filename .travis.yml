@@ -5,4 +5,4 @@ before_install:
 jobs:
   include:
     - stage: test
-      script: make -j $(nproc) && ./vanitygen 1hi
+      script: echo $(nproc --all) && make -j $(nproc) && ./vanitygen 1foxxo
