@@ -6,4 +6,4 @@ jobs:
   include:
     - stage: test
       script: make -j $(nproc)
-      script: ./vanitygen 1hi
+    - script: ./vanitygen 1hi
