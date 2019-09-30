@@ -4,7 +4,6 @@ before_install:
   - sudo apt install -y libssl-dev
 jobs:
   include:
-    - stage: build
-      script: make -j $(nproc)
     - stage: test
+      script: make -j $(nproc)
       script: ./vanitygen 1hi
