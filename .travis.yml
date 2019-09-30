@@ -1,5 +1,6 @@
 language: cpp
 os: osx
+before_install: brew install openssl
 jobs:
   include:
     - stage: test
