@@ -1,0 +1,10 @@
+language: cpp
+before_install:
+  - sudo apt update
+  - sudo apt install -y libssl-dev
+jobs:
+  include:
+    - stage: build
+      script: make -j $(nproc)
+    - stage: test
+      script: ./vanitygen 1hi
