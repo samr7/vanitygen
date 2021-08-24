@@ -138,7 +138,7 @@ main(int argc, char **argv)
 
 	if (key2_in) {
 		BN_CTX *bnctx;
-		BIGNUM bntmp, bntmp2;
+		BIGNUM *bntmp, *bntmp2;
 		EC_KEY *pkey2;
 
 		pkey2 = EC_KEY_new_by_curve_name(NID_secp256k1);
@@ -155,19 +155,19 @@ main(int argc, char **argv)
 			fprintf(stderr, "ERROR: Unrecognized key format\n");
 			return 1;
 		}
-		BN_init(&bntmp);
-		BN_init(&bntmp2);
+		bntmp = BN_new();
+		bntmp2 = BN_new();
 		bnctx = BN_CTX_new();
-		EC_GROUP_get_order(EC_KEY_get0_group(pkey), &bntmp2, NULL);
-		BN_mod_add(&bntmp,
+		EC_GROUP_get_order(EC_KEY_get0_group(pkey), bntmp2, NULL);
+		BN_mod_add(bntmp,
 			   EC_KEY_get0_private_key(pkey),
 			   EC_KEY_get0_private_key(pkey2),
-			   &bntmp2,
+			   bntmp2,
 			   bnctx);
-		vg_set_privkey(&bntmp, pkey);
+		vg_set_privkey(bntmp, pkey);
 		EC_KEY_free(pkey2);
-		BN_clear_free(&bntmp);
-		BN_clear_free(&bntmp2);
+		BN_clear_free(bntmp);
+		BN_clear_free(bntmp2);
 		BN_CTX_free(bnctx);
 	}
 
